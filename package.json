@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "goldset": "tsx --env-file=.env.local scripts/goldset.ts",
     "golden": "tsx --env-file=.env.local scripts/golden.ts",
+    "regression:shanghai": "tsx --env-file=.env.local scripts/shanghai-regression.ts",
     "samples:export": "tsx --env-file=.env.local scripts/export-samples.ts",
     "smoke": "tsx --env-file=.env.local scripts/smoke.ts",
     "test:extensions": "tsx --env-file=.env.local scripts/extensions.ts",

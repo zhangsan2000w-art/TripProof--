@@ -1,4 +1,5 @@
 import type { Evidence } from './domain';
+import { readableText } from './itinerary';
 
 /**
  * Names as guides write them ("洞头小洱海（中屿等到你）", "公交9路：灵昆站—沙角站") rarely
@@ -6,15 +7,15 @@ import type { Evidence } from './domain';
  * then the parts of a route.
  */
 export function placeNames(name: string, transport = false): string[] {
-  const full = name.replace(/\s+/g, '');
+  const full = readableText(name).replace(/city\s*walk/gi, '').replace(/\s+/g, '');
   const main = full.replace(/[（(][^）)]*[）)]/g, '');
   const aliases = [...full.matchAll(/[（(]([^）)]+)[）)]/g)].map(m => m[1]).filter(a => [...a].length >= 3 && !/轨道交通|打车|步行|地铁|公交/.test(a));
-  const parts = transport ? main.split(/[／/—\-：:]+/).filter(p => [...p].length >= 3) : [];
+  const parts = transport ? main.split(/[／/—\-：:→➡]+/).filter(p => [...p].length >= 2) : [];
   return [...new Set([main || full, ...aliases, ...parts].filter(Boolean))];
 }
 /** The query form of a place name: brackets and route punctuation become spaces. */
 export function searchName(name: string, transport = false) {
-  return transport ? name.replace(/[（()）]/g, ' ').replace(/[／/—：:]+/g, ' ').replace(/\s+/g, ' ').trim() : placeNames(name)[0];
+  return transport ? readableText(name).replace(/[（()）]/g, ' ').replace(/[／/—：:→➡]+/g, ' ').replace(/\s+/g, ' ').trim() : placeNames(name)[0];
 }
 /** Relevance comes before source prestige; unrelated official pages add noise. */
 export function selectVenueSources(pages: Evidence[], name: string, city: string, officialDomain: string | null, limit = 8, transport = false): Evidence[] {

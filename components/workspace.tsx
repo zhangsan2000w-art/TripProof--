@@ -28,6 +28,10 @@ export function Workspace({ tripId }: { tripId: string }) {
     catch (error) { setError((error as Error).message); }
   }, [tripId]);
   useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    try { const key = `tripproof:start-error:${tripId}`, message = sessionStorage.getItem(key); if (message) { setError(`行程已保存，调查尚未启动：${message}`); sessionStorage.removeItem(key); } }
+    catch { /* Browser storage is optional. */ }
+  }, [tripId]);
   const busy = state?.run?.status === 'queued' || state?.run?.status === 'running';
   useEffect(() => { if (!busy) return; const interval = setInterval(refresh, 2200); return () => clearInterval(interval); }, [busy, refresh]);
   useEffect(() => {
@@ -102,7 +106,7 @@ export function Workspace({ tripId }: { tripId: string }) {
       {error && <div className="banner banner-error" role="alert"><AlertCircle size={16}/>{error}<button className="icon-button" onClick={() => setError('')} aria-label="关闭错误"><X size={14}/></button></div>}
       {state.run?.status === 'failed' && <div className="banner banner-error"><AlertCircle size={16}/>{state.run.error}</div>}
       <div className={`run-card ${busy ? 'is-running' : ''}`}>
-        <div className="run-main">{busy ? <LoaderCircle size={18} className="spin"/> : <Check size={18}/>}<div><strong>{busy ? '正在调查' : state.run ? '调查已完成' : '行程已保存'}</strong><span>{busy ? state.run?.kind === 'alternatives' ? '正在查找并核实替代场馆' : state.run?.kind === 'announcement' ? '正在为公告寻找独立佐证' : latest?.type === 'search' ? `正在查证：${(latest.data as SearchCall).query}` : '正在核对规则与来源…' : state.run ? `上次检查 ${localTime(state.run.completedAt || state.run.createdAt)}` : '开始一次真实调查'}</span></div></div>
+        <div className="run-main">{busy ? <LoaderCircle size={18} className="spin"/> : state.run?.status === 'failed' ? <AlertCircle size={18}/> : <Check size={18}/>}<div><strong>{busy ? '正在调查' : state.run?.status === 'failed' ? '调查未完成' : state.run ? '调查已完成' : '行程已保存'}</strong><span>{busy ? state.run?.kind === 'alternatives' ? '正在查找并核实替代场馆' : state.run?.kind === 'announcement' ? '正在为公告寻找独立佐证' : latest?.type === 'search' ? `正在查证：${(latest.data as SearchCall).query}` : '正在核对规则与来源…' : state.run?.status === 'failed' ? '已保存取得的证据，可以重新检查' : state.run ? `上次检查 ${localTime(state.run.completedAt || state.run.createdAt)}` : '开始一次真实调查'}</span></div></div>
         {busy && state.run?.kind === 'investigation' && <div className="run-progress" aria-label={`已核对 ${judged}/${trip.items.length} 个地点`}><span style={{ width: `${Math.round(judged / trip.items.length * 100)}%` }}/></div>}
         <span className="budget-label">搜索 {state.run?.used ?? 0}/{state.run?.limit ?? 40}</span>
         <Button variant="outline" size="sm" disabled={busy || actionBusy} onClick={run}>{actionBusy ? <LoaderCircle size={13} className="spin"/> : <RefreshCw size={13}/>} {state.run ? '重新检查' : '开始检查'}</Button>
