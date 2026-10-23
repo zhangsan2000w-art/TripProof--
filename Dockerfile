@@ -15,6 +15,7 @@ RUN groupadd --gid 1001 tripproof && useradd --uid 1001 --gid tripproof --create
 COPY --from=build --chown=1001:1001 /app/node_modules ./node_modules
 COPY --from=build --chown=1001:1001 /app/.next ./.next
 COPY --from=build --chown=1001:1001 /app/package.json /app/tsconfig.json /app/next.config.ts ./
+COPY --from=build --chown=1001:1001 /app/.modelscope-source.json ./
 COPY --from=build --chown=1001:1001 /app/lib ./lib
 COPY --from=build --chown=1001:1001 /app/db ./db
 COPY --from=build --chown=1001:1001 /app/data ./data

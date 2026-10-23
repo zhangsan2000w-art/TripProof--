@@ -8,6 +8,7 @@ import { cacheGet, cacheSet } from './store';
 import { now } from './dates';
 import type { Evidence, LinkStatus } from './domain';
 import { decodePageBody, maxPageBytes } from './page-body';
+import { runSignal, assertRunning, recordMetric } from './run-control';
 
 const matchesDomain = (domain: string, parent: string) => domain === parent || domain.endsWith(`.${parent}`);
 // Central state media, national weather services, and one or two key news sites for every
@@ -97,6 +98,7 @@ function requestPage(url: URL, address: { address: string; family: number }, tim
   return new Promise((resolve, reject) => {
     const transport = url.protocol === 'https:' ? https : http;
     const req = transport.get(url, {
+      signal: runSignal(),
       headers: { 'User-Agent': process.env.USER_AGENT || 'TripProof/1.0', Accept: 'text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.1', 'Accept-Encoding': 'identity' },
       family: address.family,
       lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
@@ -120,6 +122,7 @@ function requestPage(url: URL, address: { address: string; family: number }, tim
 export type PageCheck = { linkStatus: LinkStatus; checkedAt: string; finalUrl: string; text: string; sha256: string | null };
 export function cachedLinkCheck(url:string) { return cacheGet<PageCheck>(`page:v2:${createHash('sha256').update(url).digest('hex')}`); }
 export async function checkLink(url: string, force = false): Promise<PageCheck> {
+  assertRunning();
   const key = `page:v2:${createHash('sha256').update(url).digest('hex')}`;
   const cached = !force && cacheGet<PageCheck>(key);
   if (cached) return cached;
@@ -144,12 +147,13 @@ export async function checkLink(url: string, force = false): Promise<PageCheck> 
       }
       break;
     }
-  } catch { /* A failed check never becomes a usable primary reference. */ }
+  } catch { assertRunning(); /* A failed check never becomes a usable primary reference. */ }
+  recordMetric('page',Date.now()-started,{status:result.linkStatus});
   cacheSet(key, result, result.linkStatus === 'broken' ? 15 * 60_000 : 6 * 3600_000);
   return result;
 }
-export async function verifyEvidence(evidence: Evidence, venueName: string) {
-  const checked = await checkLink(evidence.url);
+export async function verifyEvidence(evidence: Evidence, venueName: string, force=false) {
+  const checked = await checkLink(evidence.url,force);
   let content = checked.text;
   const position = content.indexOf(venueName.replace(/博物馆|景区/g, ''));
   if (position > 2500) content = content.slice(Math.max(0, position - 1000), position + 11000);

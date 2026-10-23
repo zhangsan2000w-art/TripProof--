@@ -23,6 +23,11 @@ function connect() {
     CREATE TABLE IF NOT EXISTS access_attempts (key TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS guides (trip_id TEXT PRIMARY KEY, text TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS guide_images (trip_id TEXT NOT NULL, idx INTEGER NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(trip_id, idx));
+    CREATE TABLE IF NOT EXISTS agent_checkpoints (run_id TEXT PRIMARY KEY REFERENCES runs(id), payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_messages (id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trips(id), run_id TEXT, request_id TEXT, payload TEXT NOT NULL, UNIQUE(trip_id, request_id));
+    CREATE INDEX IF NOT EXISTS agent_messages_trip ON agent_messages(trip_id);
+    CREATE TABLE IF NOT EXISTS agent_proposals (id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trips(id), run_id TEXT NOT NULL, payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS venue_usage (run_id TEXT NOT NULL, venue_id TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(run_id,venue_id));
   `);
   for (const name of ['venues', 'search_calls', 'evidence', 'facts', 'judgments', 'ripples', 'suggestions']) {
     sqlite.exec(`CREATE TABLE IF NOT EXISTS ${name} (id TEXT NOT NULL, run_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(run_id,id))`);

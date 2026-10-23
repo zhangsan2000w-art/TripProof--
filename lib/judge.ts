@@ -4,7 +4,7 @@ import { registrableDomain } from './evidence';
 import { createHash } from 'node:crypto';
 import { factSupported } from './facts';
 import { judgeSafety, riskKey } from './risk';
-import { unresolvedTarget } from './itinerary';
+import { unresolvedTarget, openArea, flexibleTransfer } from './itinerary';
 function seasonLength(from: string, to: string) {
   const start = Date.parse(`2000-${from}`), end = Date.parse(`2000-${to}`);
   return ((end - start) / 86400000 + 366) % 366 + 1;
@@ -211,7 +211,7 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
       }
     }
   }
-  if (['museum', 'scenic', 'show'].includes(item.kind)) {
+  if (['museum', 'scenic', 'show'].includes(item.kind) && (!openArea(item) || facts.some(f=>f.kind==='reservation') || item.claimedRules.some(c=>c.kind==='reservation'))) {
     const r = resolve(facts.filter(f => f.kind === 'reservation'), 'reservation_rule');
     if (r) {
       const f = r.picked[0];
@@ -226,7 +226,7 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     make('availability', 'unknown', 'REALTIME', `实时门票和预约库存无法通过网页搜索确认，请到${dossier?.venue.officialDomain ? `场馆官方渠道（${dossier.venue.officialDomain}）` : '场馆官方 App 或小程序'}核实。`);
   }
   if (item.kind === 'transport' && !unresolved) {
-    const r = resolve(facts.filter(f => f.kind === 'service_hours'), 'service_hours');
+    const r = flexibleTransfer(item)?null:resolve(facts.filter(f => f.kind === 'service_hours'), 'service_hours');
     if (r) {
       const f = r.picked[0];
       if (f.kind === 'service_hours') {
@@ -294,11 +294,15 @@ export function judgeTrip(trip: TripInput, dossiers: Dossier[]): Judgment[] {
 }
 export function judgeConnections(trip:TripInput,dossiers:Dossier[]):Judgment[] {
   const ordered=[...trip.items].sort((a,b)=>a.day-b.day||a.seq-b.seq);
-  return ordered.flatMap((item,index)=>{
+  return ordered.flatMap<Judgment>((item,index)=>{
     const previous=ordered[index-1];if(!previous||previous.day!==item.day||previous.placeName===item.placeName)return [];
     const date=dateForDay(trip.startDate,item.day);
     const refs=dossiers.flatMap(d=>d.facts).filter(f=>f.kind==='transport_duration'&&f.quoteVerified&&f.venueMatch==='exact'&&f.linkStatus==='ok'&&validOn(f,date)&&f.payload.from.includes(previous.placeName)&&f.payload.to.includes(item.placeName));
     const gap=previous.end&&item.start?minutes(item.start)-minutes(previous.end):null;
+    // A negative same-day gap is already impossible from the user's own times;
+    // no traffic estimate is needed to identify that contradiction. Overnight
+    // activities remain unknown because these fields do not encode a day offset.
+    if(gap!==null&&gap<0&&previous.start&&minutes(previous.end!)>=minutes(previous.start))return [{id:`connection-${previous.id}-${item.id}-${date}`,itemId:item.id,venueId:'connection',type:'connection_fit' as const,date,verdict:'conflict' as const,reasonCode:'PLAN_TIME_OVERLAP',explanation:`按当前路线先去「${previous.placeName}」（${previous.start}—${previous.end}），再去「${item.placeName}」（${item.start}到达），前后时间倒置或重叠；请调整时段或路线顺序。`,factIds:[],overruledFactIds:[],evidenceIds:[],searchedScope:[],notes:['此冲突仅依据你填写的计划时间计算，不依赖交通耗时。'],judgedAt:now()}];
     return [{id:`connection-${previous.id}-${item.id}-${date}`,itemId:item.id,venueId:'connection',type:'connection_fit' as const,date,verdict:'unknown' as const,reasonCode:refs.length?'TRAVEL_TIME_REFERENCE':'NO_TRAVEL_DURATION',explanation:`${previous.placeName} → ${item.placeName}：${gap===null?'缺少完整计划时段，无法计算衔接余量。':gap<0?'填写的前后时段存在重叠，需要调整。':`已填写的间隔为 ${gap} 分钟。`}${refs.length?'公开路线耗时仅为参考，不包含实时路况和候车。':'没有找到可可靠用于计算这段衔接的交通耗时。'}`,factIds:refs.map(f=>f.id),overruledFactIds:[],evidenceIds:[...new Set(refs.map(f=>f.evidenceId))],searchedScope:dossiers.filter(d=>d.facts.some(f=>refs.includes(f))).flatMap(d=>d.searchedScope),notes:['交通实时情况与实际可达性需在出发前自行确认。'],judgedAt:now()}];
   });
 }

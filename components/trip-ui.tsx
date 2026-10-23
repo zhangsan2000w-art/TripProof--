@@ -14,24 +14,27 @@ export function PlanStatus({ state, busy = false }: { state: PlanState; busy?: b
 }
 
 /** Proportional bar of the four outcomes, with legend buttons that filter the list. */
-export function StatusBar({ counts, filter, onFilter }: { counts: Record<PlanState, number>; filter?: PlanState | 'all'; onFilter?: (state: PlanState | 'all') => void }) {
+export function StatusBar({ counts, filter, onFilter, partial = false }: { counts: Record<PlanState, number>; filter?: PlanState | 'all'; onFilter?: (state: PlanState | 'all') => void; partial?: boolean }) {
   const total = planStates.reduce((n, s) => n + counts[s], 0) || 1;
+  const label = (state: typeof planStates[number]) => partial && state === 'fits' ? '仍在核验' : planLabels[state];
+  const hint = (state: typeof planStates[number]) => partial && state === 'fits' ? '部分规则已有依据，最终核验尚未结束；请等待必要检查完成。' : planHints[state];
+  const tone = (state: typeof planStates[number]) => partial && state === 'fits' ? 'pending' : state;
   return <div className="status-bar-wrap">
-    <div className="status-bar" aria-hidden>{planStates.filter(s => counts[s]).map(s => <span key={s} className={`seg plan-${s}`} style={{ width: `${(counts[s] / total) * 100}%` }}/>)}</div>
+    <div className="status-bar" aria-hidden>{planStates.filter(s => counts[s]).map(s => <span key={s} className={`seg plan-${tone(s)}`} style={{ width: `${(counts[s] / total) * 100}%` }}/>)}</div>
     <div className="outcome-filters" role={onFilter ? 'group' : undefined} aria-label="按状态筛选">
       {planStates.map(s => onFilter
-        ? <button key={s} type="button" className={`legend plan-${s} ${filter === s ? 'active' : ''}`} aria-pressed={filter === s} title={planHints[s]} onClick={() => onFilter(filter === s ? 'all' : s)}>{planLabels[s]}<b>{counts[s]}</b></button>
-        : <span key={s} className={`legend plan-${s}`} title={planHints[s]}>{planLabels[s]}<b>{counts[s]}</b></span>)}
+        ? <button key={s} type="button" className={`legend plan-${tone(s)} ${filter === s ? 'active' : ''}`} aria-pressed={filter === s} title={hint(s)} onClick={() => onFilter(filter === s ? 'all' : s)}>{label(s)}<b>{counts[s]}</b></button>
+        : <span key={s} className={`legend plan-${tone(s)}`} title={hint(s)}>{label(s)}<b>{counts[s]}</b></span>)}
       {onFilter && filter && filter !== 'all' && <button type="button" className="legend legend-reset" onClick={() => onFilter('all')}>显示全部</button>}
     </div>
   </div>;
 }
 
 const toneIcons = { bad: AlertTriangle, warn: Siren, info: CircleHelp, good: CircleCheck };
-export function VerdictCard({ verdict, children, busy = false }: React.PropsWithChildren<{ verdict: TripVerdict; busy?: boolean }>) {
+export function VerdictCard({ verdict, children, busy = false, pendingLabel }: React.PropsWithChildren<{ verdict: TripVerdict; busy?: boolean; pendingLabel?:string }>) {
   const Icon = toneIcons[verdict.tone];
   return <section className={`verdict tone-${busy ? 'info' : verdict.tone}`} aria-label="行程结论">
-    <div className="verdict-head"><span className="verdict-icon"><Icon size={22}/></span><div><h2>{busy ? '正在核对你的行程…' : verdict.headline}</h2>{!busy && verdict.detail && <p>{verdict.detail}</p>}</div></div>
+    <div className="verdict-head"><span className="verdict-icon"><Icon size={22}/></span><div><h2>{busy ? pendingLabel||'正在核对你的行程…' : verdict.headline}</h2>{!busy && verdict.detail && <p>{verdict.detail}</p>}</div></div>
     {children}
   </section>;
 }

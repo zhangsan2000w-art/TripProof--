@@ -6,6 +6,7 @@ import type { Trip, TripInput, Run, RunKind, RunResult, EventType, TripState, Gu
 import { emptyResult } from './domain';
 import { now, today } from './dates';
 import { AppError } from './errors';
+import { agentView } from './agent-store';
 
 export const id = () => randomUUID();
 export const token = () => randomBytes(24).toString('base64url');
@@ -71,7 +72,8 @@ export function createRun(trip: Trip, kind: RunKind = 'investigation', input: Re
   const { db, sqlite } = database();
   return sqlite.transaction(() => {
     const active = db.select().from(s.runs).where(and(eq(s.runs.tripId, trip.id), eq(s.runs.status, 'running'))).get()
-      ?? db.select().from(s.runs).where(and(eq(s.runs.tripId, trip.id), eq(s.runs.status, 'queued'))).get();
+      ?? db.select().from(s.runs).where(and(eq(s.runs.tripId, trip.id), eq(s.runs.status, 'queued'))).get()
+      ?? db.select().from(s.runs).where(and(eq(s.runs.tripId, trip.id), eq(s.runs.status, 'waiting_user'))).get();
     if (active) throw new AppError('RUN_ACTIVE', '这份行程正在调查，请等待当前任务结束。', 409);
     const run: Run = { id: id(), tripId: trip.id, kind, status, createdAt: now(), updatedAt: now(), startedAt: null, completedAt: null, firstVerdictAt: null, used: 0, limit: 40, input, result: emptyResult(), error: null, tripRevision: trip.revision };
     db.insert(s.runs).values(run).run();
@@ -93,14 +95,20 @@ export function claimRun(): Run | null {
   return sqlite.transaction(() => {
     const run = db.select().from(s.runs).where(eq(s.runs.status, 'queued')).orderBy(asc(s.runs.createdAt)).get();
     if (!run) return null;
-    db.update(s.runs).set({ status: 'running', startedAt: now(), updatedAt: now() }).where(and(eq(s.runs.id, run.id), eq(s.runs.status, 'queued'))).run();
+    db.update(s.runs).set({ status: 'running', startedAt: run.startedAt ?? now(), updatedAt: now() }).where(and(eq(s.runs.id, run.id), eq(s.runs.status, 'queued'))).run();
     return getRun(run.id);
   })();
 }
 export function emit(runId: string, type: EventType, data: unknown) {
   const { db } = database();
   db.insert(s.events).values({ runId, type, data, at: now() }).run();
-  db.update(s.runs).set({ updatedAt: now(), ...(type === 'verdict' && !getRun(runId).firstVerdictAt ? { firstVerdictAt: now() } : {}) }).where(eq(s.runs.id, runId)).run();
+  const judgment=type==='verdict'?data as import('./domain').Judgment:null;
+  const run=getRun(runId);
+  const meaningful=judgment&&!run.firstVerdictAt&&['open_on_date','hours_fit','reservation_rule','service_hours','guide_claim'].includes(judgment.type)
+    &&getTrip(run.tripId).items.some(i=>i.id===judgment.itemId)
+    &&run.result?.dossiers.some(d=>d.facts.some(f=>judgment.factIds.includes(f.id)&&f.quoteVerified&&f.venueMatch==='exact'&&f.linkStatus==='ok'
+      &&d.evidence.some(e=>e.id===f.evidenceId&&e.linkStatus==='ok'&&judgment.evidenceIds.includes(e.id))));
+  db.update(s.runs).set({ updatedAt: now(), ...(meaningful ? { firstVerdictAt: now() } : {}) }).where(eq(s.runs.id, runId)).run();
 }
 export function readEvents(runId: string, after = 0) { return database().db.select().from(s.events).where(and(eq(s.events.runId, runId), gt(s.events.id, after))).orderBy(asc(s.events.id)).all(); }
 export function saveResult(runId: string, result: RunResult) {
@@ -115,6 +123,7 @@ export function saveResult(runId: string, result: RunResult) {
   });
 }
 export function finishRun(runId: string, result: RunResult, error: string | null = null) {
+  if (getRun(runId).status === 'cancelled') return;
   saveResult(runId, result);
   database().db.update(s.runs).set({ status: error ? 'failed' : 'completed', completedAt: now(), updatedAt: now(), error, input: {} }).where(eq(s.runs.id, runId)).run();
   emit(runId, error ? 'error' : 'done', { message: error ?? '调查完成', used: getRun(runId).used });
@@ -123,7 +132,11 @@ export function recoverInterruptedRuns() {
   const { db } = database();
   const cutoff = new Date(Date.now() - 180_000).toISOString();
   for (const run of db.select().from(s.runs).where(eq(s.runs.status, 'running')).all()) {
-    if (run.updatedAt < cutoff) finishRun(run.id, run.result ?? emptyResult(), '调查进程曾中断，已有证据已保留，可以重新检查。');
+    if (run.updatedAt < cutoff) {
+      const resumable = database().sqlite.prepare('SELECT run_id FROM agent_checkpoints WHERE run_id=?').get(run.id);
+      if (resumable) db.update(s.runs).set({status:'queued',updatedAt:now()}).where(eq(s.runs.id,run.id)).run();
+      else finishRun(run.id, run.result ?? emptyResult(), '调查进程曾中断，已有证据已保留，可以重新检查。');
+    }
   }
 }
 export function tripState(trip: Trip, options: { completedOnly?: boolean } = {}): TripState {
@@ -149,7 +162,7 @@ export function tripState(trip: Trip, options: { completedOnly?: boolean } = {})
       }
     }
   }
-  return { trip, run, result, runs: rows.map(({ id, kind, status, createdAt, tripRevision }) => ({ id, kind, status, createdAt, tripRevision })), events: run ? readEvents(run.id) : [] };
+  return { trip, run, result, runs: rows.map(({ id, kind, status, createdAt, tripRevision }) => ({ id, kind, status, createdAt, tripRevision })), events: run ? readEvents(run.id) : [], ...(!options.completedOnly ? {agent:agentView(trip.id,run?.id ?? null)} : {}) };
 }
 export function cacheGet<T>(key: string): T | null {
   const row = database().db.select().from(s.cache).where(eq(s.cache.key, key)).get();
@@ -164,15 +177,21 @@ export function quota(key: string, limit: number) {
     sqlite.prepare('INSERT INTO usage(key,count) VALUES(?,1) ON CONFLICT(key) DO UPDATE SET count=count+1').run(key);
   })();
 }
-export function reserveSearch(runId: string) {
+export function reserveSearch(runId: string, venueId?: string) {
   const { sqlite } = database();
   sqlite.transaction(() => {
     const run = getRun(runId);
+    if (run.status === 'cancelled') throw new AppError('RUN_CANCELLED', '调查已停止。', 409);
+    if (venueId) {
+      const used = (sqlite.prepare('SELECT count FROM venue_usage WHERE run_id=? AND venue_id=?').get(runId,venueId) as {count:number}|undefined)?.count ?? 0;
+      if (used >= 5) throw new AppError('VENUE_BUDGET','该场馆已达到五次搜索上限。',429);
+    }
     const dailyKey = `search:${today()}`;
     const daily = (sqlite.prepare('SELECT count FROM usage WHERE key=?').get(dailyKey) as { count: number } | undefined)?.count ?? 0;
     const total = (sqlite.prepare("SELECT SUM(count) AS n FROM usage WHERE key LIKE 'search:%'").get() as { n: number | null }).n ?? 0;
     if (run.used >= run.limit || daily >= Number(process.env.SEARCH_DAILY_LIMIT ?? 1000) || total >= Number(process.env.SEARCH_TOTAL_LIMIT ?? 6000)) throw new AppError('BUDGET_EXHAUSTED', '搜索预算已用完，未完成的检查保持尚无法确认。', 429);
     sqlite.prepare('UPDATE runs SET used=used+1,updated_at=? WHERE id=?').run(now(), runId);
+    if (venueId) sqlite.prepare('INSERT INTO venue_usage(run_id,venue_id,count) VALUES(?,?,1) ON CONFLICT(run_id,venue_id) DO UPDATE SET count=count+1').run(runId,venueId);
     sqlite.prepare('INSERT INTO usage(key,count) VALUES(?,1) ON CONFLICT(key) DO UPDATE SET count=count+1').run(dailyKey);
   })();
   emit(runId, 'budget', { used: getRun(runId).used, limit: getRun(runId).limit });
