@@ -5,10 +5,10 @@ RUN corepack enable && corepack prepare pnpm@12.14.0 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm build
+RUN APP_FRAME_MODE=modelscope pnpm build
 
 FROM node:24-bookworm-slim AS runtime
-ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=7860 DATABASE_PATH=/mnt/workspace/tripproof/tripproof.db ACCESS_REQUIRED=1
+ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=7860 DATABASE_PATH=/mnt/workspace/tripproof/tripproof.db ACCESS_REQUIRED=1 APP_FRAME_MODE=modelscope
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates gosu && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 1001 tripproof && useradd --uid 1001 --gid tripproof --create-home tripproof

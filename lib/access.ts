@@ -55,9 +55,14 @@ export function privateResponse<T extends Response>(response: T): T {
   return response;
 }
 
+export function privateCookieOptions(request: Request) {
+  const embedded = process.env.APP_FRAME_MODE === 'modelscope';
+  const secure = embedded || new URL(request.url).protocol === 'https:' || process.env.APP_URL?.startsWith('https://') === true || request.headers.get('x-forwarded-proto')?.split(',')[0].trim() === 'https';
+  return { httpOnly: true, sameSite: embedded ? 'none' as const : 'lax' as const, secure, path: '/', ...(embedded ? { partitioned: true } : {}) };
+}
+
 export function accessCookieOptions(request: Request) {
-  const secure = new URL(request.url).protocol === 'https:' || process.env.APP_URL?.startsWith('https://') === true || request.headers.get('x-forwarded-proto')?.split(',')[0].trim() === 'https';
-  return { httpOnly: true, sameSite: 'lax' as const, secure, path: '/', maxAge: ACCESS_MAX_AGE };
+  return { ...privateCookieOptions(request), maxAge: ACCESS_MAX_AGE };
 }
 
 export function validAccessOrigin(request: Request) {

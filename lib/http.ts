@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { AppError, errorMessage } from './errors';
 import { ownerHash, token } from './store';
+import { privateCookieOptions } from './access';
 export function session(req: NextRequest) {
   const existing = req.cookies.get('tp_session')?.value;
   const value = existing && /^[A-Za-z0-9_-]{32}$/.test(existing) ? existing : token();
@@ -10,12 +11,12 @@ export function session(req: NextRequest) {
 export function respond(req: NextRequest, data: unknown, status = 200) {
   const result = NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
   const s = session(req);
-  if (s.fresh) result.cookies.set('tp_session', s.value, { httpOnly: true, sameSite: 'lax', secure: new URL(req.url).protocol === 'https:', path: '/', maxAge: 60 * 60 * 24 * 90 });
+  if (s.fresh) result.cookies.set('tp_session', s.value, { ...privateCookieOptions(req), maxAge: 60 * 60 * 24 * 90 });
   return result;
 }
 export function respondWithSession(req: NextRequest, value: string, data: unknown, status = 200) {
   const result = NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
-  result.cookies.set('tp_session', value, { httpOnly: true, sameSite: 'lax', secure: new URL(req.url).protocol === 'https:', path: '/', maxAge: 60 * 60 * 24 * 90 });
+  result.cookies.set('tp_session', value, { ...privateCookieOptions(req), maxAge: 60 * 60 * 24 * 90 });
   return result;
 }
 export function sameOrigin(req: NextRequest) {

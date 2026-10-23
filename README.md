@@ -21,8 +21,8 @@ tags:
 1. 登录魔搭，绑定已实名认证的阿里云账号，创建编程式创空间，SDK 选 Docker，资源选页面提供的免费 CPU 规格。
 2. 在原项目运行 `pnpm deploy:modelscope:prepare`。把生成的 `tmp/modelscope/` **里面的文件和目录**上传到创空间仓库根目录，确保根目录能看到 Dockerfile；不要再套一层 modelscope 文件夹。也可以克隆平台提供的 Git 仓库，把这些文件提交到其 Master 分支。
 3. 在“设置 → 环境变量”填写下表。密钥只填在运行时环境变量中，不写入仓库文件。新部署不要直接上传原项目目录。
-4. 点击“上线”，查看构建及运行日志，等待网页就绪和 `investigation worker ready`。运行后取得独立应用的 HTTPS 地址，将它填入 `APP_URL` 并重启。
-5. 在独立窗口打开应用，确认先显示密码页，解锁后再进行一次小行程调查。检查搜索、事件流和重启后的数据保留；这些检查需要真实部署环境。
+4. 点击“上线”，查看构建及运行日志，等待网页就绪和 `investigation worker ready`。运行后取得 `https://空间标识.ms.show` 应用地址，将它填入 `APP_URL` 并重启。
+5. 打开应用，平台可能自动转入魔搭全屏运行页。确认先显示密码页，解锁后再进行一次小行程调查。检查搜索、事件流和重启后的数据保留；这些检查需要真实部署环境。
 
 准备脚本不会覆盖已有输出目录，更新时可运行 `pnpm deploy:modelscope:prepare --out=tmp/modelscope-next` 生成新目录。
 
@@ -51,7 +51,9 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 未配置密码或签名密钥时，应用拒绝启动；不会因为漏配而开放内容。密码在服务端校验，使用 HttpOnly Cookie 记住 7 天；可点击“锁定访问”退出。更改密码或签名密钥并重启可使旧 Cookie 失效。连续 5 次错误需等待最多 15 分钟，整个实例同时有失败次数上限。健康检查仅返回存活状态。
 
-请用**独立窗口打开应用运行地址**，现有页面防嵌入策略和 SameSite Cookie 不支持跨站 iframe 中使用。入口密码保护运行内容；空间源码的可见性由魔搭设置决定。此上传目录不包含本地攻略图片、报告数据库、账户配置或 API 凭据。
+魔搭镜像在构建和运行时设置 `APP_FRAME_MODE=modelscope`：仅允许 `www.modelscope.cn` 与 `modelscope.cn` 嵌入，入口和行程 Cookie 使用 HttpOnly、Secure、SameSite=None、Partitioned，支持平台全屏框架中的登录与编辑。普通 Node/VPS 构建保持禁止嵌入和 SameSite=Lax。更改构建模式需重新构建；第三方浏览器若禁用分区 Cookie，需允许该站点使用 Cookie。
+
+入口密码保护运行内容；空间源码的可见性由魔搭设置决定，可选择“体验公开、源码隐藏”。此上传目录不包含本地攻略图片、报告数据库、账户配置或 API 凭据。
 
 免费的是托管资源，GPT 与元宝搜索仍可能计费。休眠后需等待平台唤醒；运行中被中断的调查会保留已完成证据，并提示重试。平台保留 `/mnt/workspace` 数据，但重命名或转移空间仍可能丢失，重要数据应单独备份。当前版本使用单实例、单 worker，不要开启多副本。
 
