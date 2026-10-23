@@ -3,12 +3,15 @@ import { dateForDay, holidayState, inSeason, minutes, now, weekday, weekdayLabel
 import { registrableDomain } from './evidence';
 import { createHash } from 'node:crypto';
 import { factSupported } from './facts';
+import { judgeSafety, riskKey } from './risk';
 function seasonLength(from: string, to: string) {
   const start = Date.parse(`2000-${from}`), end = Date.parse(`2000-${to}`);
   return ((end - start) / 86400000 + 366) % 366 + 1;
 }
 
-const dailyRule = /每日|每天|天天|全年无休|全年开放|全天开放|全天候|24\s*小时|无闭馆日|不闭馆|周一至周日|周一到周日/;
+const dailyRule = /每日|每天|天天|全年无休|年中無休|全年开放(?!时间|時間)|全天开放|全天候|24\s*小[时時]|无闭馆日|不闭馆|周一至周日|周一到周日/;
+// "全年开放时间 9:00-17:00（周一闭馆）" names a closing day, so it is not an every-day rule.
+const daily = (quote: string) => dailyRule.test(quote) && !/闭馆|閉館|休馆|闭园|不开放|停止开放/.test(quote.replace(/无闭馆日|不闭馆/g, ''));
 type Resolution = { picked: Fact[]; overruled: Fact[]; error: 'NO_EVIDENCE' | 'WEAK_EVIDENCE' | 'SOURCES_DISAGREE' | 'LINK_REQUIRES_BROWSER' | null };
 function fingerprint(fact: Fact, date: string): string {
   if (fact.kind === 'temp_closure' || fact.kind === 'weekly_closure') return 'closed';
@@ -121,7 +124,7 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     // non-museums, and only when no source mentions a weekly closure.
     const closureSources = new Set(facts.filter(f => f.kind === 'weekly_closure').map(f => f.evidenceId));
     const implied = facts.filter(f => f.kind === 'hours' && (!f.payload.weekdays || f.payload.weekdays.includes(w)) && f.payload.seasons.some(s => inSeason(date, s.from, s.to))
-      && (f.payload.weekdays !== null || dailyRule.test(f.quote) || (closureSources.has(f.evidenceId) ? !closed.some(c => c.evidenceId === f.evidenceId) : !closureSources.size && item.kind !== 'museum')))
+      && (f.payload.weekdays !== null || daily(f.quote) || (closureSources.has(f.evidenceId) ? !closed.some(c => c.evidenceId === f.evidenceId) : !closureSources.size && item.kind !== 'museum')))
       .map(f => ({ ...f, kind: 'weekly_open', payload: { weekdays: [0, 1, 2, 3, 4, 5, 6], exceptStatutoryHolidays: false } }) as Fact);
     const open = [...facts.filter(f => f.kind === 'weekly_open' && f.payload.weekdays.includes(w)), ...implied];
     const uncertainHoliday = [...closed, ...open].some(f => (f.kind === 'weekly_open' || f.kind === 'weekly_closure') && f.payload.exceptStatutoryHolidays && holiday === 'unpublished');
@@ -129,7 +132,14 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     const partial = facts.filter(f => f.kind === 'temp_closure' && f.payload.scope === 'partial' && covers(f, date));
     if(!specific.length && openEnded.length && !closed.length){
       const r=resolve(openEnded,'open_on_date');
-      if(r)make('open_on_date','unknown','OPEN_ENDED_CLOSURE',`找到已生效的临时关闭报道，但未明确恢复日期；不能确认 ${date} 已恢复开放，请联系官方渠道。`,r.picked,r.overruled);
+      if (r) {
+        // A recent closure "until further notice" with no reopening found is treated as closed;
+        // an old one may well have ended quietly, so it stays unconfirmed.
+        const since = r.picked.flatMap(f => f.kind === 'temp_closure' ? [f.payload.from] : []).sort().at(-1)!;
+        const recent = daysUntil(date, since) <= 14 && daysUntil(since) >= -30;
+        if (recent) make('open_on_date', 'conflict', 'CLOSED_UNTIL_NOTICE', `${Number(since.slice(5, 7))}月${Number(since.slice(8))}日起临时关闭，公告没写恢复日期，也没查到恢复开放的通知，按关闭处理；出发前可再查官方公告。`, r.picked, r.overruled);
+        else make('open_on_date','unknown','OPEN_ENDED_CLOSURE',`找到已生效的临时关闭报道，但未明确恢复日期；不能确认 ${date} 已恢复开放，请联系官方渠道。`,r.picked,r.overruled);
+      }
     }
     else if (!specific.length && uncertainHoliday) make('open_on_date', 'unknown', 'HOLIDAY_SCHEDULE_NOT_PUBLISHED', reasonText.HOLIDAY_SCHEDULE_NOT_PUBLISHED, [...closed, ...open]);
     else {
@@ -259,11 +269,12 @@ export function judgeWeather(item: Item, trip: TripInput, dossier?: Dossier): Ju
   // A forecast is worth showing even from one site; only agreement without rain confirms it.
   const resolved = resolveFacts(forecasts, date, dossier);
   const risky = (f: Fact & { kind: 'weather' }) => Boolean(f.payload.warning) || /雨|雪|雷|台风|大风/.test(f.payload.summary);
+  const severe = forecasts.some(f => /暴雨|台风|暴雪|冰雹|(?:[89]|1[0-7])\s*级/.test(`${f.payload.summary} ${f.payload.warning ?? ''}`));
   const shown = [...new Map(forecasts.map(f => [f.payload.summary.replace(/[，。,.\s]/g, ''), f])).values()].slice(0, 2);
   const warnings = [...new Set(forecasts.map(f => f.payload.warning).filter(Boolean))];
   const risk = forecasts.some(risky);
   return { ...base, verdict: risk || resolved.error ? 'unknown' : 'confirmed', reasonCode: risk ? 'WEATHER_RISK' : resolved.error ?? 'FORECAST_FOUND',
-    explanation: `${date} ${shown[0].payload.city}预报：${shown.map(f => f.payload.summary.replace(/[。.]$/, '')).join('；另一来源：')}${warnings.length ? `；${warnings.join('；')}` : ''}。预报可能变化，下雨不代表景点关闭。`,
+    explanation: `${date} ${shown[0].payload.city}预报：${shown.map(f => f.payload.summary.replace(/[。.]$/, '')).join('；另一来源：')}${warnings.length ? `；${warnings.join('；')}` : ''}。${severe ? '可能发布预警，出发前查当地气象台预警和景区公告。' : risk ? '户外安排注意安全，预报可能变化。' : '预报可能变化，出发前再看一次。'}`,
     factIds: shown.map(f => f.id), evidenceIds: [...new Set(shown.map(f => f.evidenceId))], notes: ['本次查询后不进行定时监控。'] };
 }
 export function judgeTrip(trip: TripInput, dossiers: Dossier[]): Judgment[] {
@@ -271,7 +282,10 @@ export function judgeTrip(trip: TripInput, dossiers: Dossier[]): Judgment[] {
     const city = item.city || trip.destinationCity;
     const dossier = dossiers.find(d => d.venue.key === `${city}:${item.placeName}`);
     const judgments = judgeItem(item, trip, dossier);
-    if (item.kind === 'scenic' || /户外|登山|游船|步行|日落/.test(item.activity)) judgments.push(judgeWeather(item, trip, dossiers.find(d => d.venue.key === `weather:${city}:${dateForDay(trip.startDate, item.day)}`)));
+    const weather = dossiers.find(d => d.venue.key === `weather:${city}:${dateForDay(trip.startDate, item.day)}`);
+    if (item.kind === 'scenic' || /户外|登山|游船|步行|日落/.test(item.activity)) judgments.push(judgeWeather(item, trip, weather));
+    const safety = judgeSafety(item, trip, dossiers.find(d => d.venue.key === riskKey(city)), weather);
+    if (safety) judgments.push(safety);
     return judgments;
   }), ...judgeConnections(trip,dossiers)];
 }

@@ -48,7 +48,21 @@ export const extractedFactSchema = z.discriminatedUnion('kind', [
   z.object({ ...factBase, kind: z.literal('transport_duration'), payload: z.object({ from: z.string(), to: z.string(), mode: z.string(), durationMinutes: z.number().positive().max(3000), isMinimum: z.boolean() }) }),
   z.object({ ...factBase, kind: z.literal('weather'), payload: z.object({ date: dateString, city: z.string(), summary: z.string(), precipitationProb: z.number().min(0).max(100).nullable(), warning: z.string().nullable() }) }),
 ]);
-export type ExtractedFact = z.infer<typeof extractedFactSchema>;
+/** Hazards an area notice can be about, as weather services and tourism bureaus name them. */
+export const hazards = ['台风', '暴雨', '大风', '暴雪', '冰雹', '雷电', '大雾', '高温', '寒潮', '山洪地质灾害', '其他'] as const;
+/**
+ * A notice that applies to an area rather than one venue: a weather warning, an emergency
+ * response, an area-wide closure or a transport suspension. Which trip stops it covers is
+ * decided separately (see PlaceRisk), because the notice itself rarely names them.
+ */
+export const advisoryPayload = z.object({
+  type: z.enum(['closure', 'reopen', 'warning', 'response', 'suspension']), hazard: z.enum(hazards),
+  level: z.string().nullable(), area: z.string(), scope: z.string().nullable(), named: z.array(z.string()).max(20),
+  from: dateString, to: dateString.nullable(),
+});
+export const advisoryFactSchema = z.object({ ...factBase, kind: z.literal('advisory'), payload: advisoryPayload });
+export type VenueFact = z.infer<typeof extractedFactSchema>;
+export type ExtractedFact = VenueFact | z.infer<typeof advisoryFactSchema>;
 export const factOutputSchema = z.object({
   canonicalName: z.string(), city: z.string(),
   officialDomain: z.string().nullable(), officialEvidenceId: z.string().nullable(),
@@ -69,7 +83,7 @@ export type SearchCall = {
   version: string | null; msg: string | null; errorCode: string | null; resultCount: number;
   latencyMs: number; calledAt: string; cacheHit: boolean; cachedFrom: string | null;
 };
-export const checkTypes = ['open_on_date', 'hours_fit', 'reservation_rule', 'availability', 'arrival_fit', 'service_hours', 'weather', 'guide_claim', 'connection_fit'] as const;
+export const checkTypes = ['open_on_date', 'hours_fit', 'reservation_rule', 'availability', 'arrival_fit', 'service_hours', 'weather', 'safety', 'guide_claim', 'connection_fit'] as const;
 export type CheckType = typeof checkTypes[number];
 export type Verdict = 'confirmed' | 'conflict' | 'unknown';
 export type Judgment = {
@@ -79,7 +93,11 @@ export type Judgment = {
   ruleStatus?: 'verified' | 'reference' | 'unresolved';
 };
 export type Venue = { id: string; key: string; canonicalName: string; city: string; officialDomain: string | null; officialEvidenceId: string | null; investigationDates: string[] };
-export type Dossier = { venue: Venue; facts: Fact[]; evidence: Evidence[]; calls: SearchCall[]; searchedScope: string[]; limitations: string[]; createdAt: string };
+/** How exposed a stop is to severe weather, and which area notices cover it. */
+export const exposures = ['coastal', 'mountain', 'water', 'outdoor', 'indoor', 'transport'] as const;
+export type Exposure = typeof exposures[number];
+export type PlaceRisk = { place: string; exposure: Exposure; exposureReason: string; covers: { factId: string; how: 'named' | 'scope' | 'area'; reason: string }[] };
+export type Dossier = { venue: Venue; facts: Fact[]; evidence: Evidence[]; calls: SearchCall[]; searchedScope: string[]; limitations: string[]; createdAt: string; places?: PlaceRisk[] };
 export type Ripple = { itemId: string; causeItemId: string; reason: string; kind: 'EXPLICIT' | 'SAME_VENUE' | 'TIMING_CHAIN' | 'LEG_ORIGIN_CHANGED' };
 export const opSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('shift'), itemId: z.string(), start: timeString, end: timeString.nullable() }),

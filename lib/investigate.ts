@@ -7,13 +7,15 @@ import { emptyResult, kinds } from './domain';
 import { searchPro } from './search/yuanbao';
 import { verifyEvidence } from './evidence';
 import { corroboratesClaim } from './announcements';
-import { extractFacts, extractWeatherFacts, supportedDossierFacts } from './facts';
+import { extractAdvisories, extractFacts, extractWeatherFacts, hasRiskWords, supportedDossierFacts } from './facts';
+import { hazardWindowDays, judgeSafety, riskKey } from './risk';
 import { judgeItem, judgeConnections, judgeWeather } from './judge';
 import { rippleEffects, suggestions } from './impact';
 import { AppError, errorMessage } from './errors';
 import { redact, structured } from './llm';
 import { mapLimit, Semaphore } from './concurrency';
 import { searchName, selectVenueSources } from './source-selection';
+import { searchAllowance } from './budget';
 
 const links = new Semaphore(8);
 const models = new Semaphore(3);
@@ -23,7 +25,7 @@ function candidateDomain(pages: Evidence[], name: string) {
   return pages.find(p => !excluded.test(p.site) && ((p.title.includes(key) && (/\.(?:gov|org)\.cn$/.test(p.site) || /官网|官方/.test(p.title))) || (pages.filter(other => other.site === p.site).length >= 2 && `${p.title} ${p.passage}`.includes(name))))?.site ?? null;
 }
 function venueId(key: string) { return createHash('sha256').update(key).digest('hex').slice(0, 24); }
-export async function investigateVenue(runId: string, item: Item, city: string, dates: string[]): Promise<Dossier> {
+export async function investigateVenue(runId: string, item: Item, city: string, dates: string[], cap = 5): Promise<Dossier> {
   const key = `${city}:${item.placeName}`, vid = venueId(key);
   const cacheKey = `dossier:v6:${key}:${[...dates].sort().join(',')}`;
   const cached = cacheGet<Dossier>(cacheKey);
@@ -37,6 +39,7 @@ export async function investigateVenue(runId: string, item: Item, city: string, 
   }
   const dossier: Dossier = { venue: { id: vid, key, canonicalName: item.placeName, city, officialDomain: null, officialEvidenceId: null, investigationDates: dates }, facts: [], evidence: [], calls: [], searchedScope: [], limitations: [], createdAt: now() };
   const venueCalls = { used: 0 }, pages: Evidence[] = [];
+  if (cap < 1) { dossier.limitations.push('本次搜索额度已分给其他地点，这一站未检索；可以单独重新检查。'); return dossier; }
   const search = async (params: SearchParams) => {
     dossier.searchedScope.push(`${params.query}${params.site ? ` · 站点 ${params.site}` : ''}${params.freshness ? ` · 时间范围 ${params.freshness}` : ''}`);
     try { const r = await searchPro(runId, vid, params, venueCalls); pages.push(...r.pages); return r.pages; }
@@ -47,11 +50,12 @@ export async function investigateVenue(runId: string, item: Item, city: string, 
   const first = await search({ query: `${qcity} ${qname} ${item.kind === 'transport' ? '运营时间 首末班' : '开放时间 闭馆'}` });
   const domain = candidateDomain(first, mainName);
   const month = dates[0]?.slice(0, 7).replace('-', '年') + '月';
+  // Follow-ups in order of value, cut to this stop's share of the budget.
   const followups: SearchParams[] = [
-    ...(domain ? [{ query: `${qname} 闭馆 公告`, site: domain, freshness: 'm3' }] : []),
     { query: `${qcity} ${qname} ${item.kind === 'transport' ? '停运 运营调整' : '临时闭馆'} ${month}`, freshness: 'm2', industry: 'news' },
     ...(['museum', 'scenic', 'show'].includes(item.kind) ? [{ query: `${qcity} ${qname} 预约 提前 放票`, ...(domain ? { site: domain } : {}) }] : []),
-  ];
+    ...(domain ? [{ query: `${qname} 闭馆 公告`, site: domain, freshness: 'm3' }] : []),
+  ].slice(0, Math.max(0, cap - 1));
   await Promise.all(followups.map(search));
   // Verify a bounded set of URLs, rather than opening every search hit.
   const selected = selectVenueSources(pages, item.placeName, city, domain, 8, transport);
@@ -62,7 +66,7 @@ export async function investigateVenue(runId: string, item: Item, city: string, 
     dossier.venue.canonicalName = output.canonicalName; dossier.venue.officialDomain = output.officialDomain; dossier.venue.officialEvidenceId = output.officialEvidenceId;
     dossier.facts = output.facts; dossier.limitations.push(...output.ambiguities);
     const missingEntry = ['museum', 'scenic', 'show'].includes(item.kind) && !output.facts.some(f => f.kind === 'temp_hours' && f.payload.lastEntry || f.kind === 'hours' && f.payload.seasons.some(s => s.lastEntry));
-    if ((!output.facts.some(f => f.tier <= 2 && f.linkStatus === 'ok') || missingEntry) && venueCalls.used < 5 && getRun(runId).used < getRun(runId).limit) {
+    if ((!output.facts.some(f => f.tier <= 2 && f.linkStatus === 'ok') || missingEntry) && venueCalls.used < cap && getRun(runId).used < getRun(runId).limit) {
       const more = await search({ query: missingEntry ? `${qcity} ${qname} 营业时间 停止入园 停止售票` : `${qcity} ${qname} 官方 参观须知 开放时间` });
       const extras = selectVenueSources(more.filter(p => !dossier.evidence.some(e => e.url === p.url)), item.placeName, city, domain, 3, transport);
       if (extras.length) {
@@ -95,16 +99,72 @@ async function investigateWeather(runId: string, city: string, date: string): Pr
   } catch (error) { d.limitations.push(errorMessage(error)); }
   return d;
 }
+/** Search a city's warnings, emergency responses and area-wide closures for the trip dates. */
+async function searchRisk(runId: string, city: string, dates: string[]): Promise<Dossier> {
+  const key = riskKey(city), vid = venueId(`${key}:${dates.join(',')}`);
+  const d: Dossier = { venue: { id: vid, key, canonicalName: `${city}预警与区域公告`, city, officialDomain: null, officialEvidenceId: null, investigationDates: dates }, evidence: [], facts: [], calls: [], searchedScope: [], limitations: [], createdAt: now(), places: [] };
+  const window = dates.filter(date => daysUntil(date) >= 0 && daysUntil(date) <= hazardWindowDays);
+  if (!window.length) { d.limitations.push(`行程日期不在未来${hazardWindowDays}天内，预警和临时关闭公告要临近出发再查。`); return d; }
+  const qcity = redact(city), md = (v: string) => `${Number(v.slice(5, 7))}月${Number(v.slice(8))}日`;
+  const queries: SearchParams[] = [
+    { query: `${qcity} 台风 暴雨 预警 ${md(window[0])}`, freshness: 'd7' },
+    { query: `${qcity} 景区 临时关闭 停运 公告`, freshness: 'd7', industry: 'news' },
+  ];
+  const calls = { used: 0 }, pages: Evidence[] = [];
+  await Promise.all(queries.map(async params => {
+    d.searchedScope.push(`${params.query} · 最近7天`);
+    try { pages.push(...(await searchPro(runId, vid, params, calls)).pages); }
+    catch (error) { d.limitations.push(error instanceof AppError ? error.message : '预警搜索未完成。'); }
+  }));
+  const place = city.replace(/市$/, '');
+  const candidates = [...new Map(pages.filter(hasRiskWords).map(p => [p.url, p])).values()]
+    .sort((a, b) => Number(`${b.title}${b.passage}`.includes(place)) - Number(`${a.title}${a.passage}`.includes(place)));
+  d.evidence = await mapLimit(candidates.slice(0, 6), 4, e => links.run(() => verifyEvidence(e, place)));
+  for (const e of d.evidence) emit(runId, 'evidence', e);
+  d.calls = listCalls(runId).filter(c => c.venueId === vid);
+  return d;
+}
+/** Read the notices once per city, together with any found while checking venues and weather. */
+async function readRisk(runId: string, trip: Trip, risk: Dossier, dossiers: Dossier[]) {
+  const city = risk.venue.city, dates = risk.venue.investigationDates;
+  if (!dates.some(date => daysUntil(date) >= 0 && daysUntil(date) <= hazardWindowDays)) return;
+  const items = trip.items.filter(i => (i.city || trip.destinationCity) === city);
+  const places = [...new Map(items.map(i => [i.placeName, { place: i.placeName, kind: i.kind, note: `${i.activity} ${i.sourceText}`.replace(/\s+/g, ' ').slice(0, 120) }])).values()];
+  const notice = /台风|暴雨|暴雪|预警|应急响应|临时关闭|暂时关闭|暂停开放|停航|停运|封闭/;
+  const recent = (e: Evidence) => !e.publishedAt || daysUntil(e.publishedAt) >= -30;
+  const found = dossiers.filter(d => d !== risk && d.venue.city === city).flatMap(d => d.evidence)
+    .filter(e => e.linkStatus !== 'broken' && recent(e) && notice.test(`${e.title} ${e.passage}`));
+  const pool = [...new Map([...risk.evidence, ...found].map(e => [e.url, e])).values()]
+    .sort((a, b) => a.tier - b.tier || Number(notice.test(b.title)) - Number(notice.test(a.title)) || (b.publishedAt ?? '').localeCompare(a.publishedAt ?? '')).slice(0, 14);
+  if (!pool.length) return;
+  try {
+    const out = await models.run(() => extractAdvisories(risk.venue.id, city, dates, places, pool));
+    risk.facts = out.facts; risk.places = out.places; risk.limitations.push(...new Set(out.ambiguities));
+    // Keep every cited page in this dossier so the report can open it.
+    const cited = new Set(out.facts.map(f => f.evidenceId));
+    risk.evidence = [...risk.evidence, ...pool.filter(e => cited.has(e.id) && !risk.evidence.some(x => x.id === e.id))];
+    for (const f of risk.facts) emit(runId, 'fact', f);
+  } catch (error) { risk.limitations.push(`预警和区域公告未能读取：${errorMessage(error)}`); }
+}
 async function mainInvestigation(run: Run, trip: Trip): Promise<RunResult> {
   const result = emptyResult();
   const groups = new Map<string, Item[]>();
   for (const item of trip.items) { const key = `${item.city || trip.destinationCity}:${item.placeName}`; groups.set(key, [...(groups.get(key) ?? []), item]); }
   const tasks = [...groups.values()].sort((a, b) => (a[0].kind === 'museum' ? -1 : 0) - (b[0].kind === 'museum' ? -1 : 0));
-  emit(run.id, 'plan', { message: `将调查 ${groups.size} 个地点；先核对规则，再计算你的日期与时段。`, venues: tasks.map(items => items[0].placeName), limit: run.limit });
+  emit(run.id, 'plan', { message: `先查目的地预警和区域关闭公告，再调查 ${groups.size} 个地点的规则，最后计算你的日期与时段。`, venues: tasks.map(items => items[0].placeName), limit: run.limit });
+  // Safety searches start first, so a long venue list cannot use up the budget before them.
+  const cityDates = new Map<string, Set<string>>();
+  for (const item of trip.items) { const city = item.city || trip.destinationCity; cityDates.set(city, (cityDates.get(city) ?? new Set()).add(dateForDay(trip.startDate, item.day))); }
+  const risks = Promise.all([...cityDates].map(([city, dates]) => searchRisk(run.id, city, [...dates].sort())));
+  const inWindow = (date: string) => daysUntil(date) >= 0 && daysUntil(date) <= 7;
+  const reserved = [...cityDates.values()].filter(dates => [...dates].some(inWindow)).length * 2
+    + new Set(trip.items.filter(i => (i.kind === 'scenic' || /户外|登山|游船|步行|日落/.test(i.activity)) && inWindow(dateForDay(trip.startDate, i.day))).map(i => `${i.city || trip.destinationCity}:${i.day}`)).size;
+  const allowance = searchAllowance(tasks.map(t => t[0]), run.limit - reserved);
+  const caps = new Map(tasks.map((items, n) => [items, allowance[n]]));
   await mapLimit(tasks, 3, async items => {
     const item = items[0], city = item.city || trip.destinationCity;
     const dates = [...new Set(items.map(i => dateForDay(trip.startDate, i.day)))];
-    const dossier = await investigateVenue(run.id, item, city, dates);
+    const dossier = await investigateVenue(run.id, item, city, dates, caps.get(items));
     result.dossiers.push(dossier);
     for (const current of items) {
       const judgments = judgeItem(current, trip, dossier);
@@ -122,6 +182,15 @@ async function mainInvestigation(run: Run, trip: Trip): Promise<RunResult> {
     for (const item of group.items) { const judgment = judgeWeather(item, trip, dossier); result.judgments.push(judgment); emit(run.id, 'verdict', judgment); }
     saveResult(run.id, result);
   });
+  for (const risk of await risks) {
+    await readRisk(run.id, trip, risk, result.dossiers); result.dossiers.push(risk);
+    for (const item of trip.items.filter(i => (i.city || trip.destinationCity) === risk.venue.city)) {
+      const weather = result.dossiers.find(d => d.venue.key === `weather:${risk.venue.city}:${dateForDay(trip.startDate, item.day)}`);
+      const judgment = judgeSafety(item, trip, risk, weather);
+      if (judgment) { result.judgments.push(judgment); emit(run.id, 'verdict', judgment); }
+    }
+    saveResult(run.id, result);
+  }
   for (const judgment of judgeConnections(trip,result.dossiers)) { result.judgments.push(judgment); emit(run.id,'verdict',judgment); }
   result.ripples = rippleEffects(trip, result.judgments); for (const ripple of result.ripples) emit(run.id, 'ripple', ripple);
   result.suggestions = suggestions(trip, result.dossiers, result.judgments); for (const suggestion of result.suggestions) emit(run.id, 'suggestion', suggestion);

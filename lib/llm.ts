@@ -55,7 +55,7 @@ export async function structured<T extends z.ZodType>(role: 'extract' | 'fact' |
 export type InputImage = { data: string; sourceIndex: number };
 export const extractionInputSchema = z.object({
   text: z.string().max(40000).default(''),
-  images: z.array(z.object({ data: z.string().max(6_000_000).regex(/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/), sourceIndex: z.number().int().min(1).max(6) })).max(30).default([]),
+  images: z.array(z.object({ data: z.string().max(6_000_000).regex(/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/), sourceIndex: z.number().int().min(1).max(9) })).max(40).default([]),
 }).refine(v => v.text.trim() || v.images.length, '请粘贴攻略或上传图片。');
 
 export async function extractItinerary(text: string, images: InputImage[]): Promise<Draft> {
@@ -67,10 +67,10 @@ export async function extractItinerary(text: string, images: InputImage[]): Prom
 提取实际路线的日期分组、地点顺序、活动和计划时间。必须保留 sourceText 原文。sourceImage 是原图序号，纯文字则 null。
 最重要：开放时间/营业时间/运营时间是攻略声称的规则，放入 claimedRules，绝不能作为 start/end 计划游玩时间。没有明确到达或游玩时段时，start/end 必须 null。不要推算游玩起止或交通耗时。
 图文的“住宿建议”“美食推荐”“游玩建议”“备选”“交通指南”不代表已计划的路线：放入 recommendations，不擅自插入 days。路线途中的明确交通安排可以是 transport。
-路线文字明确写出的进出交通、接驳和返程必须作为transport安排保留（例如温州S1/S2至灵昆站、洞头9路至沙角站、海上月堤返回温州市区），不因标题没有“Day”而移入推荐。地铁沿线景点总览则仍属于指南。公交时刻表只是claimedRules中的运营规则，不是选定发车时间。交通条目placeName写线路/起终点，避免仅用目的景点名称新增一份重复参观。
+路线文字明确写出的进出交通、接驳和返程必须作为transport安排保留（例如“乘地铁X号线到某站下车”“换乘某路公交到某站”“从最后一站坐车返回市区”），不因标题没有“Day”而移入推荐。每个景点卡片里的“交通：地铁X号线”只是到达方式说明，放入该地点 claimedRules（kind=transport），不单独新增交通条目。地铁沿线景点总览则仍属于指南。公交时刻表只是claimedRules中的运营规则，不是选定发车时间。交通条目placeName写线路/起终点，避免仅用目的景点名称新增一份重复参观。
 地图中沿箭头读取路线，重复地点可能是返程，不得凭印象重排。只有地图且无明确起点/方向时列入 ambiguities。文本和图片互补时合并去重。
 保留 dayIndex（Day1/第一天等），没有分天信息则第1天。同页重复的序号不应覆盖实际上下顺序。每一天 seq 从1递增。
-地点按原文抄写；“依锦城/衣锦城”等疑似错别字在 ambiguities 提醒，不静默更名。“临安东站”不等于高铁站，可能是汽车站；没有证据不要推断交通种类。
+地点按原文抄写；疑似错别字（同音或形近字）在 ambiguities 提醒，不静默更名。站名带“东站/南站”等不代表高铁站，可能是汽车站；没有证据不要推断交通种类。
 city 只填能从文本或图片上下文确定的城市，否则 null。dependsOnPrevious 仅用于明确依赖（同场馆内午餐/同船接驳），普通先后顺序为 false。
 confidence 是读取置信度，低于0.7需人工校对。不得输出个人姓名、手机号、证件、订单或预订号。
 guideMeta.publishedAt 只填资料明确的发布日期，不是出行日期。`, content, 13000);

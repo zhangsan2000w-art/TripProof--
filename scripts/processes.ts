@@ -3,10 +3,13 @@ import { cpSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { accessConfig } from '../lib/access';
+import { initializeSampleReports } from '../lib/sample-bundle';
 const require = createRequire(import.meta.url);
 export function launch(mode: 'dev' | 'start') {
   if (existsSync('.env.local')) process.loadEnvFile('.env.local');
   if (accessConfig().mode === 'invalid') throw new Error('访问保护配置不完整：请设置 ACCESS_PASSWORD 和至少 32 字符的 ACCESS_SESSION_SECRET。');
+  const samples = initializeSampleReports();
+  if (samples.featured) console.log(`精选示例就绪：${samples.featured} 份；本次恢复 ${samples.imported} 份。`);
   const next = require.resolve('next/dist/bin/next');
   const tsx = require.resolve('tsx/cli');
   const env = { ...process.env, DATABASE_PATH: resolve(process.env.DATABASE_PATH || '.data/tripproof.db'), HOSTNAME: process.env.HOSTNAME || '127.0.0.1', PORT: process.env.PORT || '3000' };

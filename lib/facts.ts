@@ -1,13 +1,13 @@
-import { factOutputSchema, extractedFactSchema, type Evidence, type Fact, type ExtractedFact, type Venue } from './domain';
+import { factOutputSchema, extractedFactSchema, advisoryPayload, exposures, hazards, type Evidence, type Fact, type ExtractedFact, type VenueFact, type PlaceRisk, type Venue } from './domain';
 import { z } from 'zod';
 import { structured } from './llm';
 import { id } from './store';
-import { normalizeQuote, quoteMatches, sourceTier, registrableDomain, venueSiteDomains } from './evidence';
+import { normalizeQuote, quoteMatches, sourceTier, registrableDomain, venueSiteDomains, siteLabel } from './evidence';
 import { validDate } from './dates';
 import { createHash } from 'node:crypto';
 
 function mentionsTime(value: string, text: string) {
-  if ((value === '00:00' || value === '24:00') && /全天开放|24\s*小时|全天候/.test(text)) return true;
+  if ((value === '00:00' || value === '24:00') && /全天开放|24\s*小[时時]|全天候/.test(text)) return true;
   const h = Number(value.slice(0, 2)), m = Number(value.slice(3));
   const normalized = text.normalize('NFKC').replace(/\s*:\s*/g, ':');
   const pm = h >= 12 ? `(?:下午|晚上|晚间)0?${h - 12}(?:[:点时]${m ? `0?${m}` : '(?:00)?'})` : '(?!)';
@@ -34,8 +34,30 @@ function mentionsDate(date: string, text: string, evidence: Evidence) {
   if (String(year) !== sourceYear || /20\d{2}(?:年|[-/.])/.test(normalized)) return false;
   return new RegExp(`(?:^|[^0-9])0?${month}(?:月|[-/.])0?${day}(?:日|号|[^0-9]|$)`).test(normalized);
 }
+/** The text around a verified quote, where a notice's dates, level and area are written. */
+function quoteContext(quote: string, evidence: Pick<Evidence, 'passage' | 'content'>, radius = 220) {
+  const q = normalizeQuote(quote);
+  for (const text of [evidence.content, evidence.passage]) {
+    const normalized = normalizeQuote(text), at = normalized.indexOf(q);
+    if (at >= 0) return normalized.slice(Math.max(0, at - radius), at + q.length + radius);
+  }
+  return normalizeQuote(quote);
+}
+const areaStem = (area: string) => area.replace(/(?:特别行政区|自治州|自治县|地区|新区|省|市|区|县)$/, '');
+function advisorySupported(fact: ExtractedFact & { kind: 'advisory' }, evidence: Evidence) {
+  const p = fact.payload, context = quoteContext(fact.quote, evidence);
+  if (!validDate(p.from) || (p.to && (!validDate(p.to) || p.to < p.from))) return false;
+  if (!mentionsDate(p.from, context, evidence) && evidence.publishedAt !== p.from) return false;
+  if (p.to && !mentionsDate(p.to, context, evidence)) return false;
+  if (p.level && !context.includes(normalizeQuote(p.level).replace(/(?:预警|信号)$/, ''))) return false;
+  if (p.scope && !context.includes(normalizeQuote(p.scope))) return false;
+  const area = normalizeQuote(areaStem(p.area));
+  if (!/^(?:全市|本市|市区|全省|全区)$/.test(p.area) && (area.length < 2 || !normalizeQuote(`${evidence.title} ${evidence.passage} ${context}`).includes(area))) return false;
+  return true;
+}
 export function factSupported(fact: ExtractedFact, evidence: Evidence): boolean {
   if (fact.venueMatch !== 'exact' || evidence.linkStatus === 'broken' || !quoteMatches(fact.quote, evidence)) return false;
+  if (fact.kind === 'advisory') return advisorySupported(fact, evidence);
   if ((fact.validFrom && !mentionsDate(fact.validFrom, `${evidence.passage} ${evidence.content}`, evidence)) || (fact.validTo && !mentionsDate(fact.validTo, `${evidence.passage} ${evidence.content}`, evidence)) || (fact.validFrom && fact.validTo && fact.validFrom > fact.validTo)) return false;
   const quote = fact.quote;
   // A permanent-looking rule can be qualified by a nearby expiry sentence.
@@ -50,6 +72,8 @@ export function factSupported(fact: ExtractedFact, evidence: Evidence): boolean 
     }
   }
   if (fact.kind === 'weekly_closure' && /(?:上午|下午|晚间|晚間|局部|部分)[^，,。；;]{0,12}(?:闭馆|閉館|关闭|關閉)/.test(quote)) return false;
+  // An opening rule cannot include a weekday its own quote says is closed.
+  if (fact.kind === 'weekly_open' && fact.payload.weekdays.some(d => closedWeekdays(quote).includes(d))) return false;
   if (fact.kind === 'hours') return fact.payload.seasons.every(s => {
     const annual = s.from === '01-01' && s.to === '12-31';
     const mentionsMonthDay = (value:string) => new RegExp(`(?:^|[^0-9])0?${Number(value.slice(0,2))}(?:月|[-/.])0?${Number(value.slice(3))}(?:日|号|[^0-9]|$)`).test(normalizeQuote(quote));
@@ -76,11 +100,21 @@ export function factSupported(fact: ExtractedFact, evidence: Evidence): boolean 
   if (fact.kind === 'weather' && (!mentionsDate(fact.payload.date, quote, evidence) || !`${evidence.passage} ${evidence.content}`.includes(fact.payload.city.replace(/市$/, '')) || !bareText(fact.payload.summary) || !bareText(quote).includes(bareText(fact.payload.summary)) || (fact.payload.warning && !bareText(quote).includes(bareText(fact.payload.warning))))) return false;
   return true;
 }
+const weekdayNumbers: Record<string, number> = { 日: 0, 天: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
+/** Weekdays a sentence says are closed all day, e.g. 逢周一闭馆, 每周一全天闭馆. */
+export function closedWeekdays(text: string): number[] {
+  return [...normalizeQuote(text).matchAll(/(?:周|星期|礼拜)([一二三四五六日天])(?:全天)?(?:闭馆|閉館|休馆|闭园|不开放|不對外開放|不对外开放)/g)].map(m => weekdayNumbers[m[1]]);
+}
+/** "全天开放" written as an opening rule is also the day's hours, so it can be weighed against other hours. */
+export function allDayHours(base: ExtractedFact): VenueFact[] {
+  if (base.kind !== 'weekly_open' || base.payload.weekdays.length !== 7 || !/全天开放|24\s*小[时時]|全天候/.test(base.quote) || /\d{1,2}\s*[:：]\s*\d{2}/.test(base.quote)) return [];
+  return [{ ...base, kind: 'hours', payload: { seasons: [{ from: '01-01', to: '12-31', open: '00:00', close: '24:00', lastEntry: null }], weekdays: null } }];
+}
 /** Re-rank stored sources with the current tier rules, so saved reports benefit too. */
 export function retierDossier(dossier: { facts: Fact[]; evidence: Evidence[]; venue: Venue }) {
   const names = [...new Set([dossier.venue.canonicalName, dossier.venue.key.split(':').slice(1).join(':')])];
   const sites = dossier.venue.officialDomain ? [] : [...new Set(names.flatMap(name => venueSiteDomains(dossier.evidence, name)))];
-  for (const e of dossier.evidence) e.tier = sourceTier(new URL(e.finalUrl || e.url).hostname, e.authorityLevel, dossier.venue.officialDomain, sites);
+  for (const e of dossier.evidence) e.tier = sourceTier(new URL(e.finalUrl || e.url).hostname, e.authorityLevel, dossier.venue.officialDomain, sites, siteLabel(e));
   for (const f of dossier.facts) { const e = dossier.evidence.find(e => e.id === f.evidenceId); if (e) f.tier = e.tier; }
 }
 export function supportedDossierFacts(dossier: { facts: Fact[]; evidence: Evidence[]; venue?: Venue }): Fact[] {
@@ -91,7 +125,7 @@ export function supportedDossierFacts(dossier: { facts: Fact[]; evidence: Eviden
   });
   for (const base of [...facts]) {
     const source = dossier.evidence.find(e=>e.id===base.evidenceId)!;
-    for (const extra of seasonalHours(base,source)) {
+    for (const extra of [...seasonalHours(base,source), ...allDayHours(base)]) {
       if (!facts.some(f=>f.evidenceId===extra.evidenceId&&f.kind===extra.kind&&JSON.stringify(f.payload)===JSON.stringify(extra.payload))) {
         facts.push({...base,...extra,id:createHash('sha256').update(`${base.id}:${JSON.stringify(extra.payload)}`).digest('hex').slice(0,24)} as Fact);
       }
@@ -100,9 +134,9 @@ export function supportedDossierFacts(dossier: { facts: Fact[]; evidence: Eviden
   return facts;
 }
 /** Read an explicit seasonal extension that follows a complete annual rule. */
-export function seasonalHours(base: ExtractedFact, evidence: Evidence): ExtractedFact[] {
+export function seasonalHours(base: ExtractedFact, evidence: Evidence): VenueFact[] {
   if (base.kind !== 'hours' || base.payload.seasons.length !== 1 || base.payload.seasons[0].from !== '01-01' || base.payload.seasons[0].to !== '12-31') return [];
-  const out: ExtractedFact[] = [], opening = base.payload.seasons[0].open;
+  const out: VenueFact[] = [], opening = base.payload.seasons[0].open;
   for (const text of [evidence.content, evidence.passage]) {
     const body = text.normalize('NFKC'), baseAt = body.indexOf(base.quote.normalize('NFKC'));
     if (baseAt < 0) continue;
@@ -117,7 +151,7 @@ export function seasonalHours(base: ExtractedFact, evidence: Evidence): Extracte
       const quote = nearby.slice(at, match.index! + match[0].length);
       if ([...quote].length > 80) continue;
       const pad = (v:string) => v.padStart(2,'0'), time = (v:string) => v.split(':').map(pad).join(':');
-      const fact: ExtractedFact = { ...base, quote, payload: { seasons: [{from:`${pad(match[1])}-${pad(match[2])}`,to:`${pad(match[3])}-${pad(match[4])}`,open:opening,close:time(match[5]),lastEntry:time(match[6])}], weekdays:base.payload.weekdays } };
+      const fact: VenueFact = { ...base, quote, payload: { seasons: [{from:`${pad(match[1])}-${pad(match[2])}`,to:`${pad(match[3])}-${pad(match[4])}`,open:opening,close:time(match[5]),lastEntry:time(match[6])}], weekdays:base.payload.weekdays } };
       if (factSupported(fact,evidence) && !out.some(f=>JSON.stringify(f.payload)===JSON.stringify(fact.payload))) out.push(fact);
     }
   }
@@ -128,7 +162,7 @@ export async function extractFacts(venueId: string, name: string, city: string, 
   if (!usable.length) return { canonicalName: name, officialDomain: null, officialEvidenceId: null, facts: [] as Fact[], ambiguities: ['没有已检查且可用的来源链接。'] };
   const output = await structured('fact', factOutputSchema, `你是旅行规则的证据读取器。只提取指定城市、指定场馆、对应分馆的明确事实，不能做日期计算、推理补全或决策。
 不同来源分别提取，不合并。每个事实 quote 必须来自该 evidenceId 的 text 或 passage 的逐字连续子串，最多80个字符，并包含支持 payload 的完整关键规则（尤其数字、时间）。不要引用标题拼凑事实。
-时间一律HH:mm；全年常规时间的季节范围是01-01到12-31，季节性范围只抄原文。一个hours事实只包含一段季节规则，避免引文过长。weekly_open 只提取明确开放的星期（例如“周二至周日”），不能从“周一闭馆”反推其他天一定开放；原文写“每日/每天/全年无休/全年开放/周一至周日/全天开放”时提取 weekdays 为0-6的 weekly_open；weekly_closure 单独提取。
+时间一律HH:mm；全年常规时间的季节范围是01-01到12-31，季节性范围只抄原文。一个hours事实只包含一段季节规则，避免引文过长。weekly_open 只提取明确开放的星期（例如“周二至周日”），不能从“周一闭馆”反推其他天一定开放；原文写“每日/每天/全年无休/周一至周日/全天开放”时提取 weekdays 为0-6的 weekly_open；“全年开放时间”只是全年适用的营业时间，同一句写了闭馆日时不能提取为每天开放；weekly_closure 单独提取。
 weekdays 用0=周日到6=周六。常规闭馆规则里的“法定节假日除外”才设置exceptStatutoryHolidays=true。
 临时公告 from/to 必须是原文明确的日期，不能把查询日期当作公告日期；单日公告两者相同。temp_closure未说明恢复日期时to必须null，保留“自某日起临时关闭/恢复时间另行通知”的说法。局部区域关闭是partial，不能写whole。
 validFrom/validTo 只填明确的生效/失效日期，不是文章发表日期，也不是查询日期。没有则null。
@@ -158,10 +192,10 @@ officialDomain 只在证据正文/站点身份能证明该域名由场馆所属�
     }
   }
   const sites = officialDomain ? [] : venueSiteDomains(usable, name);
-  for (const e of evidence) e.tier = sourceTier(new URL(e.finalUrl || e.url).hostname, e.authorityLevel, officialDomain, sites);
+  for (const e of evidence) e.tier = sourceTier(new URL(e.finalUrl || e.url).hostname, e.authorityLevel, officialDomain, sites, siteLabel(e));
   for (const fact of [...output.facts]) {
     const source = usable.find(e => e.id === fact.evidenceId);
-    if (source) for (const extra of seasonalHours(fact, source)) {
+    if (source) for (const extra of [...seasonalHours(fact, source), ...allDayHours(fact)]) {
       if (!output.facts.some(f => f.evidenceId === extra.evidenceId && f.kind === extra.kind && JSON.stringify(f.payload) === JSON.stringify(extra.payload))) output.facts.push(extra);
     }
   }
@@ -186,4 +220,69 @@ export async function extractWeatherFacts(venueId:string,city:string,date:string
   const schema=z.object({facts:z.array(extractedFactSchema.options.find(s=>s.shape.kind.value==='weather')!).max(3)});
   const output=await structured('fact',schema,'仅读取明确属于指定城市和日期的天气预报。必须逐字复制含预报日期及天气内容的连续短引文（最多80字符），summary 只抄引文中的天气现象和气温，warning 只抄引文中的预警或台风说法，不得用查询日期替换原文日期，不根据今天/明天猜日期，不输出其它城市或日期。validFrom/validTo均null，没有匹配预报返回空数组。',[{type:'input_text',text:JSON.stringify({city,date,evidence:usable.map(e=>{const whole=`${e.passage} ${e.content}`;const at=Math.min(...tokens.map(t=>whole.indexOf(t)).filter(n=>n>=0));return {id:e.id,text:whole.slice(Math.max(0,at-400),at+2200)};})})}],3000);
   return output.facts.filter(f=>f.kind==='weather'&&f.payload.date===date).flatMap(f=>{const e=usable.find(e=>e.id===f.evidenceId);return e&&factSupported(f,e)?[{...f,id:id(),venueId,quoteVerified:true,tier:e.tier,domain:new URL(e.finalUrl||e.url).hostname,publishedAt:e.publishedAt,retrievedAt:e.retrievedAt,linkStatus:e.linkStatus} as Fact]:[];});
+}
+const riskWords = /台风|暴雨|暴雪|大风|预警|应急响应|防汛|防台|关闭|闭园|闭馆|暂停开放|暂停营业|停航|停运|停驶|恢复开放|封闭/;
+/** Up to three passages around notice wording, so long pages stay within the reading budget. */
+function riskText(e: Evidence) {
+  const whole = `${e.passage} ${e.content}`, windows: [number, number][] = [];
+  for (const m of whole.matchAll(new RegExp(riskWords.source, 'g'))) {
+    const at = m.index!; if (windows.some(([a, b]) => at >= a && at <= b)) continue;
+    windows.push([Math.max(0, at - 300), at + 900]); if (windows.length >= 3) break;
+  }
+  return windows.length ? windows.map(([a, b]) => whole.slice(a, b)).join(' … ') : whole.slice(0, 1200);
+}
+export const hasRiskWords = (e: Pick<Evidence, 'title' | 'passage' | 'content'>) => riskWords.test(`${e.title} ${e.passage} ${e.content.slice(0, 20000)}`);
+/**
+ * Read area notices (warnings, emergency responses, area-wide closures, suspensions) and
+ * decide which trip stops each covers. Every notice is checked against its source text;
+ * coverage that the notice does not name is kept, but labelled as judged from its scope.
+ */
+export async function extractAdvisories(venueId: string, city: string, dates: string[], places: { place: string; kind: string; note: string }[], evidence: Evidence[]): Promise<{ facts: Fact[]; places: PlaceRisk[]; ambiguities: string[] }> {
+  const usable = evidence.filter(e => e.linkStatus !== 'broken');
+  const advisoryOut = z.object({ evidenceId: z.string(), quote: z.string().max(80), ...advisoryPayload.shape });
+  const schema = z.object({
+    advisories: z.array(advisoryOut).max(12),
+    places: z.array(z.object({ place: z.string(), exposure: z.enum(exposures), exposureReason: z.string().max(60), covers: z.array(z.object({ advisory: z.number().int().min(0), how: z.enum(['named', 'scope', 'area']), reason: z.string().max(80) })).max(12) })).max(60),
+  });
+  const output = await structured('fact', schema, `你是出行安全公告读取器，为行程日期做风险前置检查。只读取资料明确写出、与目标城市（含其下属区县）及行程日期相关的：
+- warning：气象台发布的预警信号（台风、暴雨、大风、暴雪、冰雹、雷电、大雾、高温、寒潮、山洪地质灾害等，蓝/黄/橙/红）；
+- response：防汛防台、防台风等应急响应（Ⅳ/Ⅲ/Ⅱ/Ⅰ级）；
+- closure：景区/景点/场馆关闭、暂停开放、封闭；reopen：恢复开放；
+- suspension：航线、轮渡、公交、地铁、景区交通的停航停运。
+普通天气预报、历史回顾、科普、其他城市的公告不要提取。hazard 从 ${hazards.join('、')} 中选，与天气无关的关闭选“其他”。
+quote 必须是该 evidenceId 文本的逐字连续子串（最多80字），包含公告的核心说法（例如“…所有涉海景区景点临时关闭”“发布台风黄色预警”）。
+level 只抄原文等级（如“黄色”“Ⅲ级”），没有写 null。area 抄原文的地区名（如某区、某市）；原文写“全市”时填发布机构所在城市名。scope 逐字抄原文的适用对象（如“所有涉海景区景点”“A级旅游景区”“客渡运航线”），没有写 null。named 列出原文逐一点名的景点或线路。
+from 是原文明确的生效日期；原文没有日期时用该来源的 publishedAt。to 只填原文写明的结束或恢复日期，没有则 null。不要用查询日期代替。
+places 对每个行程地点给出 exposure：coastal 海边、海岛、沙滩礁石、海堤、靠海渔村、跨海桥、码头、海上项目；mountain 登山、山顶观景、峡谷、悬崖栈道、索道；water 乘船游船、漂流、溪谷瀑布等涉水项目；outdoor 其他露天街区、公园、广场、古镇、寺庙园林；indoor 博物馆、展馆、室内场馆、餐厅、商场；transport 交通条目。exposureReason 用一句话说明依据。
+covers 列出覆盖该地点的公告（advisory 为 advisories 数组下标）：named=公告原文点名了这个地点；scope=地点位于公告地区内并属于公告的适用对象（例如公告说某区所有涉海景区关闭，而该地点是该区的海边景点）；area=预警或应急响应的地区包含这个地点（海上、水上应急响应只覆盖涉海涉水地点）。地点不在公告地区或拿不准时不要列入。`,
+    [{ type: 'input_text', text: JSON.stringify({ city, tripDates: dates, places, evidence: usable.map(e => ({ id: e.id, title: e.title, site: e.site, publishedAt: e.publishedAt, text: riskText(e) })) }) }], 6000);
+  const ambiguities: string[] = [], facts: Fact[] = [], ids = new Map<number, Fact & { kind: 'advisory' }>();
+  output.advisories.forEach((raw, index) => {
+    const { evidenceId, quote, ...payload } = raw;
+    const source = usable.find(e => e.id === evidenceId);
+    const extracted = { evidenceId, quote, venueMatch: 'exact' as const, validFrom: null, validTo: null, kind: 'advisory' as const, payload };
+    if (source && quoteMatches(quote, source)) {
+      // A level or scope the page does not spell out is dropped rather than trusted.
+      const context = quoteContext(quote, source);
+      if (payload.level && !context.includes(normalizeQuote(payload.level).replace(/(?:预警|信号)$/, ''))) payload.level = null;
+      if (payload.scope && !context.includes(normalizeQuote(payload.scope))) payload.scope = null;
+    }
+    if (!source || !factSupported(extracted, source)) { ambiguities.push('一条预警或关闭公告未通过原文、日期或地区核验，未用于判定。'); return; }
+    const context = quoteContext(quote, source);
+    extracted.payload.named = payload.named.filter(n => n.length >= 2 && context.includes(normalizeQuote(n)));
+    const fact = { ...extracted, id: id(), venueId, quoteVerified: true, tier: source.tier, domain: new URL(source.finalUrl || source.url).hostname, publishedAt: source.publishedAt, retrievedAt: source.retrievedAt, linkStatus: source.linkStatus } as Fact & { kind: 'advisory' };
+    facts.push(fact); ids.set(index, fact);
+  });
+  const mainName = (name: string) => name.replace(/[（(].*?[）)]/g, '').trim();
+  const known = new Set(places.map(p => p.place));
+  const risks: PlaceRisk[] = output.places.filter(p => known.has(p.place)).map(p => ({
+    place: p.place, exposure: p.exposure, exposureReason: p.exposureReason,
+    covers: p.covers.flatMap(c => {
+      const fact = ids.get(c.advisory); if (!fact) return [];
+      const source = usable.find(e => e.id === fact.evidenceId)!, context = quoteContext(fact.quote, source), name = mainName(p.place);
+      const named = name.length >= 2 && (context.includes(normalizeQuote(name)) || fact.payload.named.some(n => n.includes(name) || name.includes(n)));
+      return [{ factId: fact.id, how: c.how === 'named' && !named ? 'scope' as const : c.how, reason: c.reason }];
+    }),
+  }));
+  return { facts, places: [...new Map(risks.map(r => [r.place, r])).values()], ambiguities };
 }

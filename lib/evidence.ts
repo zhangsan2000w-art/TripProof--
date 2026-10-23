@@ -9,14 +9,29 @@ import { now } from './dates';
 import type { Evidence, LinkStatus } from './domain';
 
 const matchesDomain = (domain: string, parent: string) => domain === parent || domain.endsWith(`.${parent}`);
-const authorityMedia = ['people.com.cn', 'peopleapp.com', 'xinhuanet.com', 'news.cn', 'xinhua.org', 'cctv.com', 'cnr.cn', 'chinanews.com.cn', 'chinanews.com', 'gmw.cn', 'thepaper.cn', 'chinadaily.com.cn', 'ce.cn', 'youth.cn', 'cyol.com',
-  'zjol.com.cn', 'hangzhou.com.cn', 'cztv.com', '66wz.com', 'jschina.com.cn', 'xhby.net', 'yangtse.com', 'njdaily.cn', 'longhoo.net', 'cqnews.net', 'zjzwfw.gov.cn', 'nmc.cn', 'cma.cn', 'weather.com.cn'];
+// Central state media, national weather services, and one or two key news sites for every
+// province-level region. City-level outlets are recognised by their site name instead (see
+// stateMediaLabel), so no city gets special treatment.
+const authorityMedia = [
+  'people.com.cn', 'peopleapp.com', 'xinhuanet.com', 'news.cn', 'xinhua.org', 'cctv.com', 'cctv.cn', 'cnr.cn', 'cri.cn', 'chinanews.com.cn', 'chinanews.com', 'gmw.cn', 'chinadaily.com.cn', 'ce.cn', 'china.com.cn', 'youth.cn', 'cyol.com', 'thepaper.cn',
+  'nmc.cn', 'cma.cn', 'weather.com.cn',
+  'qianlong.com', 'bjd.com.cn', 'bjnews.com.cn', 'enorth.com.cn', 'hebnews.cn', 'hebei.com.cn', 'sxgov.cn', 'sxrb.com', 'northnews.cn', 'nmgnews.com.cn',
+  'nen.com.cn', 'lnd.com.cn', 'chinajilin.com.cn', 'dbw.cn', 'eastday.com', 'jfdaily.com', 'shobserver.com', 'xinmin.cn',
+  'jschina.com.cn', 'xhby.net', 'jstv.com', 'zjol.com.cn', 'tidenews.com.cn', 'cztv.com', 'anhuinews.com', 'fjsen.com', 'jxnews.com.cn',
+  'dzwww.com', 'iqilu.com', 'dahe.cn', 'cnhubei.com', 'hubeidaily.net', 'rednet.cn', 'voc.com.cn', 'southcn.com', 'gdtv.cn', 'ycwb.com',
+  'gxnews.com.cn', 'hinews.cn', 'cqnews.net', 'scol.com.cn', 'newssc.org', 'thecover.cn', 'gog.cn', 'yunnan.cn', 'chinatibetnews.com', 'tibet.cn',
+  'cnwest.com', 'sxdaily.com.cn', 'gansudaily.com.cn', 'gscn.com.cn', 'qhnews.com', 'nxnews.net', 'ts.cn',
+];
+/** Site names that only licensed state and local official media use, e.g. 温州新闻网, 成都日报, 西安广播电视台. */
+const stateMediaLabel = /^[\u4e00-\u9fa5]{2,10}(?:日报|晚报|都市报|晨报|广播电视台|广播电视总台|电视台|融媒体中心|新闻网)(?:数字报|客户端|网)?$/;
+const commercialLabel = /百科|攻略|旅游|旅行|本地宝|门票|腾讯|新浪|搜狐|网易|凤凰|头条|百度|知乎|微博/;
 // Travel, ticketing and encyclopedia platforms: useful references that still need a second independent source.
 const platforms = ['ctrip.com', 'trip.com', 'mafengwo.cn', 'qyer.com', 'dianping.com', 'meituan.com', 'amap.com', 'qunar.com', 'map.baidu.com', 'baike.baidu.com', 'baike.sogou.com', 'baike.so.com', 'bendibao.com', 'ly.com', 'fliggy.com', 'tuniu.com', 'damai.cn', 'maoyan.com'];
-export function sourceTier(domain: string, authority: number | null, officialDomain?: string | null, venueSites: string[] = []): 1 | 2 | 3 | 4 {
+export function sourceTier(domain: string, authority: number | null, officialDomain?: string | null, venueSites: string[] = [], label: string | null = null): 1 | 2 | 3 | 4 {
   if ((officialDomain && matchesDomain(domain, officialDomain)) || domain.endsWith('.gov.cn') || matchesDomain(domain, '12306.cn')) return 1;
-  if (venueSites.some(d => matchesDomain(domain, d)) || authorityMedia.some(d => matchesDomain(domain, d)) || (authority !== null && authority >= 4)) return 2;
   if (platforms.some(d => matchesDomain(domain, d))) return 3;
+  if (venueSites.some(d => matchesDomain(domain, d)) || authorityMedia.some(d => matchesDomain(domain, d)) || (authority !== null && authority >= 4)) return 2;
+  if (label && stateMediaLabel.test(label.replace(/\s+/g, '')) && !commercialLabel.test(label)) return 2;
   return 4;
 }
 export function registrableDomain(domain: string) {
@@ -138,5 +153,5 @@ export async function verifyEvidence(evidence: Evidence, venueName: string) {
   else content = content.slice(0, 12000);
   if (checked.text.length > 14000) content += ` ${checked.text.slice(-1800)}`;
   return { ...evidence, finalUrl: checked.finalUrl, linkStatus: checked.linkStatus, linkCheckedAt: checked.checkedAt, pageSha256: checked.sha256,
-    content: content || evidence.content, tier: sourceTier(new URL(checked.finalUrl).hostname, evidence.authorityLevel) } satisfies Evidence;
+    content: content || evidence.content, tier: sourceTier(new URL(checked.finalUrl).hostname, evidence.authorityLevel, null, [], siteLabel(evidence)) } satisfies Evidence;
 }

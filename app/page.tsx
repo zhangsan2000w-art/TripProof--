@@ -1,26 +1,47 @@
 import Link from 'next/link';
-import { ArrowDown, Check, AlertTriangle, CircleHelp, ScanText, Fingerprint, Route, ArrowUpRight, MoveRight } from 'lucide-react';
-import { Header, Brand } from '@/components/brand';
+import { ScanText, Fingerprint, Route, ArrowUpRight, Siren, CalendarCheck, Link2, CircleHelp } from 'lucide-react';
+import { Header, Footer } from '@/components/brand';
 import { HomeForm } from '@/components/home-form';
+import { StatusBar } from '@/components/trip-ui';
 import { statistics } from '@/lib/store';
 import { sampleEndDate, sampleReports } from '@/lib/samples';
-import { planLabels } from '@/lib/presentation';
 const monthDay = (date: string) => `${Number(date.slice(5, 7))}月${Number(date.slice(8))}日`;
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export default function Home() {
   const stats = statistics(), samples = sampleReports();
-  return <><Header/><main className="home-main"><section className="hero-grid"><div className="hero-copy"><div className="hero-eyebrow"><span className="small-dot"/> 给收藏的攻略，做一次压力测试</div><h1>攻略很心动，<br/>出发前<span>再确认。</span></h1><p className="hero-description">你选好了想去的地方，<br/>我们帮你查清：那一天，真的走得通吗？</p><div className="hero-states"><span><Check size={14}/>可确认</span><span><AlertTriangle size={14}/>存在冲突</span><span><CircleHelp size={14}/>尚无法确认</span></div><div className="hero-note"><div className="note-line"/><p>从闭馆日期到停止入场，<br/><strong>每一个结论，都能回到原始出处。</strong></p></div><a href="#how-it-works" className="how-link">看看我们怎么查 <ArrowDown size={14}/></a><div className="hero-coordinate mono">30°15′N · 120°09′E <span>LEAVE WITH CONFIDENCE</span></div></div><HomeForm/></section>
-    {samples.length > 0 && <section className="sample-section" aria-label="真实调查报告"><div className="how-heading"><span className="section-eyebrow">REAL REPORTS</span><p>四份真实攻略的核对结果，点开即看，无需等待调查。</p></div>
-      <div className="sample-grid">{samples.map(s => <Link key={s.shareId} href={`/r/${s.shareId}`} className="sample-card">
+  return <><Header/><main className="home">
+    <section className="hero page">
+      <div className="hero-copy">
+        <p className="kicker"><span className="dot"/>给收藏的攻略做一次出发前核对</p>
+        <h1>攻略说能去，<br/>那天<em>真的能去吗？</em></h1>
+        <p className="lead">上传小红书截图或粘贴攻略文字，按你的出行日期逐站核对。</p>
+        <ul className="hero-points">
+          <li><Siren size={18}/><span><strong>预警和关闭公告优先</strong>台风、暴雨预警或景区临时关闭时，不会给你“可前往”。</span></li>
+          <li><CalendarCheck size={18}/><span><strong>规则对上你的日期</strong>闭馆日、停止入场、预约放票，按那一天来算。</span></li>
+          <li><Link2 size={18}/><span><strong>每条结论都有出处</strong>点开就是原文引文和链接；查不到就标“待核实”。</span></li>
+        </ul>
+      </div>
+      <HomeForm/>
+    </section>
+    {samples.length > 0 && <section className="samples page" aria-label="真实攻略的核对结果">
+      <div className="section-head"><h2>真实攻略的核对结果</h2><span>{samples.length} 份小红书攻略，点开即看，无需等待</span></div>
+      <div className="sample-grid">{samples.map(s => <Link key={s.shareId} href={`/r/${s.shareId}`} className={`card sample-card tone-${s.tone}`}>
         <span className="sample-meta">{s.city} · {monthDay(s.startDate)}{s.days > 1 ? `—${monthDay(sampleEndDate(s))}` : ''} · {s.stops} 个地点</span>
         <h3>{s.title}</h3>
-        <p className={`sample-finding tone-${s.tone}`}>{s.tone === 'bad' ? <AlertTriangle size={14}/> : s.tone === 'good' ? <Check size={14}/> : <CircleHelp size={14}/>}{s.finding}</p>
-        <div className="sample-counts">{(['adjust', 'fits', 'needs_time', 'verify'] as const).map(state => <span key={state} className={`plan-${state}`}><b>{s.counts[state]}</b>{planLabels[state]}</span>)}</div>
+        <p className="sample-finding">{s.finding}</p>
+        <StatusBar counts={s.counts}/>
         <span className="sample-open">查看报告 <ArrowUpRight size={14}/></span>
       </Link>)}</div>
     </section>}
-    <section className="how-section" id="how-it-works"><div className="how-heading"><span className="section-eyebrow">LESS GUESSWORK. MORE PROOF.</span><p>一份攻略，三步查清。</p></div><div className="how-cards"><article><span className="how-number mono">01 / READ</span><ScanText size={25} strokeWidth={1.5}/><h2>读懂原来的安排</h2><p>截图、文字都可以。先整理成行程，<br/>由你校对地点与时间，不擅自补全。</p></article><article><span className="how-number mono">02 / VERIFY</span><Fingerprint size={25} strokeWidth={1.5}/><h2>让规则对上你的日期</h2><p>查官方规则与近期公告，核对闭馆、<br/>入场和预约信息，保留每条证据。</p></article><article><span className="how-number mono">03 / REPAIR</span><Route size={25} strokeWidth={1.5}/><h2>发现问题，少改一点</h2><p>看清哪些安排需要重新确认，<br/>预览调整方案，再决定怎么走。</p></article></div></section>
-    <section className="honesty-strip"><div><span className="honesty-star">✳</span><div><h2>知道边界，也是可靠的一部分。</h2><p>实时余票、预约库存与查不到的信息，会明确告诉你“尚无法确认”。</p></div></div><span className="real-counter"><strong>{stats.trips}</strong> 份真实行程已完成检查 <MoveRight size={18}/></span></section>
-  </main><footer className="site-footer"><Brand small/><span>元宝搜索提供来源 · 日期与时间由规则核对</span><span className="mono">BUILT FOR THE JOURNEY AHEAD <ArrowUpRight size={13}/></span></footer></>;
+    <section className="steps page" id="how">
+      <div className="section-head"><h2>怎么核对的</h2><span>三步，每一步都留有记录</span></div>
+      <div className="step-grid">
+        <article className="card"><span className="step-no">1</span><ScanText size={22}/><h3>读懂原来的安排</h3><p>截图和文字都可以。整理成行程后由你校对，没写的时间不替你补。</p></article>
+        <article className="card"><span className="step-no">2</span><Fingerprint size={22}/><h3>先查预警，再查规则</h3><p>先搜目的地的气象预警和区域关闭公告，再查每一站的开放、入场和预约规则。</p></article>
+        <article className="card"><span className="step-no">3</span><Route size={22}/><h3>发现问题，少改一点</h3><p>标出需要调整和待核实的地点，给出换天或换时段的方案，应用前先预览。</p></article>
+      </div>
+    </section>
+    <section className="honesty page"><div className="card honesty-card"><CircleHelp size={22}/><div><h2>查不到，就说不知道</h2><p>实时余票、预约库存和没有可靠来源的信息，会明确标为“待核实”，不会说成能去。</p></div><span className="real-counter"><strong>{stats.trips}</strong>份真实行程已完成核对</span></div></section>
+  </main><Footer/></>;
 }
