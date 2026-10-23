@@ -605,9 +605,12 @@ details[open] > summary > .chev { transform: rotate(180deg); }
   .verdict, .notices-card, .todo, .stop-card, .suggestion, .day-alert { break-inside: avoid; }
   .stop-body { display: grid !important; gap: 8px; padding-top: 10px !important; }
   .stop:not(.open) .stop-msg { display: block; -webkit-line-clamp: unset; }
+  .item-rule small { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
   .print-brief .evidence-audit { display: none; }
   .print-evidence { display: grid; gap: 3px; color: var(--muted); font-size: 10.5px; } .print-evidence q { color: var(--ink-2); }
   .key-sources { display: none; }
+  .print-full .stop-card { break-inside: auto; }
+  .print-full .stop-row, .print-full .item-rule-grid, .print-full .source-card { break-inside: avoid; }
   .print-full .evidence-audit { display: block; }
   .detail-panel { display: none; }
   .workbench { display: block; }
