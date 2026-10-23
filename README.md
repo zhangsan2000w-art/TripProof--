@@ -110,6 +110,8 @@ pnpm test:access
 
 魔搭免费 CPU 试部署请先运行 `pnpm deploy:modelscope:prepare`，只上传生成的 `tmp/modelscope/`，不要上传整个项目目录。创建 Docker 创空间、设置运行时环境变量后上线，详细说明见 [魔搭部署说明](deploy/modelscope/README.md)。镜像监听 7860，数据库使用平台持久卷，网页与 worker 同时启动。已在魔搭免费 2 核 / 8GB Docker 资源完成实际构建、容器启动、桌面密码登录和真实调查，重部署后数据保留；实际入口、验收记录和窄屏平台限制见 [本次部署记录](docs/MODELSCOPE-DEPLOYMENT.md)。
 
+GitHub 的 [`modelscope` 分支](https://github.com/ld0574/TripProof/tree/modelscope) 保存魔搭专用部署目录，根目录 Dockerfile 使用 7860 端口和持久卷。日常在 `main` 开发并提交；运行 `pnpm deploy:modelscope:branch` 即可生成并推送部署分支，保留魔搭发布历史和四个 demo。每次同步的源码提交记录在该分支的 `.modelscope-source.json`。首次在新电脑上配置 `git remote add modelscope https://www.modelscope.cn/studios/ld0574/1023isgood.git`，之后用 `git push modelscope refs/remotes/origin/modelscope:refs/heads/master` 推送到魔搭，再在创空间点击“上线”。凭据通过 Git 凭据管理器或平台登录配置，密钥继续使用创空间的密文环境变量。
+
 部署主机需要 Docker Engine 和 Compose，域名 DNS 指向该主机并开放 80/443 端口。将 `.env.local` 放到主机上，填写实际配置和 `APP_URL`，然后运行：
 
 ```sh

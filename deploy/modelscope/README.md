@@ -27,6 +27,30 @@ tags:
 
 准备脚本不会覆盖已有输出目录，更新时可运行 `pnpm deploy:modelscope:prepare --out=tmp/modelscope-next` 生成新目录。
 
+## 从 GitHub 分支发版
+
+完整源码位于 GitHub 的 `main`，[`modelscope` 分支](https://github.com/ld0574/TripProof/tree/modelscope) 是生成的魔搭部署目录，沿用创空间的发布历史。请在 `main` 修改代码并提交，再运行：
+
+```sh
+pnpm deploy:modelscope:branch
+```
+
+该命令在临时目录生成部署文件，提交并推送到 GitHub 的 `modelscope` 分支，当前工作区仍保持 `main`。源码有未提交修改时会停止；并发推送冲突时不会强制覆盖。`.modelscope-source.json` 记录对应的 `main` 提交。同步 GitHub 分支后，需要推送到魔搭才会更新创空间代码。
+
+新电脑首次添加魔搭远端（通过 Git 凭据管理器或平台登录配置鉴权，远端地址中不要放令牌）：
+
+```sh
+git remote add modelscope https://www.modelscope.cn/studios/ld0574/1023isgood.git
+```
+
+每次发版，在 `main` 执行完同步命令后：
+
+```sh
+git push modelscope refs/remotes/origin/modelscope:refs/heads/master
+```
+
+随后在创空间点击“上线”，等待构建完成。若魔搭远端已产生额外提交导致推送被拒绝，应先检查并合并发布历史；不要使用强制推送。
+
 首页四个 demo 来自随代码发布的 `data/sample-reports.json` 精选报告包。启动时会将缺失报告补入持久卷数据库并恢复展示清单；已有行程不会被覆盖，也不会重新搜索。示例保留原出行日期和实际核对时间。更新示例时，先在原项目运行 `pnpm samples:export`，再生成上传目录。此报告包仅包含明确选中的已完成报告，不包含本地数据库、编辑凭据、原始图片和其他行程。
 
 请在创空间设置中填写以下**运行时环境变量**后上线，不要把 `.env.local` 或密钥上传到空间文件：
