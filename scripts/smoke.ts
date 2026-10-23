@@ -1,0 +1,90 @@
+import { chromium, expect } from '@playwright/test';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import type { TripState, RunEvent } from '../lib/domain';
+import { unlockTestClient } from './test-access';
+const base=process.env.APP_URL || 'http://127.0.0.1:3000';
+const folder='artifacts/browser';await mkdir(folder,{recursive:true});
+const browser=await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? {executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE} : existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? {channel:'chrome'} : {})});
+const context=await browser.newContext({viewport:{width:1440,height:1000},locale:'zh-CN',timezoneId:'Asia/Shanghai',permissions:['clipboard-read','clipboard-write']});
+await unlockTestClient(context.request,base);
+const page=await context.newPage();const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
+const results:Record<string,unknown>={testedAt:new Date().toISOString()};
+try{
+  await page.goto(base);await expect(page.getByRole('heading',{name:/攻略很心动/})).toBeVisible();
+  await page.getByRole('button',{name:'填入杭州示例'}).click();
+  await expect(page.getByRole('textbox',{name:'旅行攻略文字'})).not.toHaveValue('');
+  await page.screenshot({path:`${folder}/home-desktop.png`,fullPage:true,caret:'initial'});
+  await page.setViewportSize({width:390,height:844});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:`${folder}/home-mobile.png`,fullPage:true,caret:'initial'});
+  await page.setViewportSize({width:1440,height:1000});
+  if(!process.argv.includes('--visual-only')){
+    await page.getByRole('button',{name:'填入杭州示例'}).click();
+    await page.getByRole('button',{name:'读取攻略，整理行程'}).click();
+    await expect(page.getByRole('heading',{name:'先对一遍，再出发查证。'})).toBeVisible({timeout:260000});
+    await expect(page.getByLabel('第6项地点',{exact:true})).toBeVisible();
+    await page.getByLabel('第1天日期',{exact:true}).fill('2026-10-26');
+    await page.getByLabel('第6项地点',{exact:true}).fill('河坊街');
+    await page.screenshot({path:`${folder}/review-desktop.png`,fullPage:true,caret:'initial'});
+    const started=Date.now();await page.getByRole('button',{name:'确认行程，开始压力测试'}).click();
+    await page.waitForURL(/\/trips\//);const tripId=new URL(page.url()).pathname.split('/').at(-1)!;
+    let state:TripState=(await (await page.request.get(`${base}/api/trips/${tripId}`)).json());
+    const runId=state.run!.id;
+    const sse=await page.evaluate(async({base,runId})=>{const c=new AbortController();const r=await fetch(`${base}/api/runs/${runId}/events`,{signal:c.signal});const reader=r.body!.getReader();let text='';while(!text.includes('data:')){const v=await reader.read();if(v.done)break;text+=new TextDecoder().decode(v.value);}c.abort();return {type:r.headers.get('content-type'),text};},{base,runId});
+    expect(sse.type).toContain('text/event-stream');expect(sse.text).toContain('data:');results.sse=true;
+    await page.reload();await expect(page.getByRole('heading',{level:1})).toContainText('杭州',{timeout:20000});results.refreshRecovery=true;
+    while(state.run?.status==='queued'||state.run?.status==='running'){
+      if(Date.now()-started>900000)throw new Error('Browser investigation timed out');
+      await new Promise(resolve=>setTimeout(resolve,2500));state=await (await page.request.get(`${base}/api/trips/${tripId}`)).json();
+    }
+    expect(state.run?.status).toBe('completed');expect(state.result?.judgments.length).toBeGreaterThan(0);
+    const completedRun=state.run;
+    if(!completedRun)throw new Error('Completed run missing');
+    const events=state.events,after=events[Math.floor(events.length/2)].id;
+    const resumed=await page.request.get(`${base}/api/runs/${runId}/events`,{headers:{'Last-Event-ID':String(after)}});
+    const delivered=(await resumed.text()).split('\n').filter(l=>l.startsWith('data: ')).map(l=>JSON.parse(l.slice(6)) as RunEvent);
+    expect(delivered.length).toBeGreaterThan(0);expect(delivered.every(e=>e.id>after)).toBe(true);results.sseResume=true;
+    await page.reload();await expect(page.getByRole('button',{name:'换个日期'})).toBeEnabled();
+    await page.getByRole('button',{name:'换个日期'}).click();await page.getByLabel('新的第1天日期').fill('2026-10-27');
+    await page.getByRole('button',{name:'预览重新判定结果'}).click();await expect(page.getByRole('dialog',{name:'先看变化，再应用'})).toBeVisible();
+    await page.getByRole('button',{name:'应用修改'}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
+    state=await (await page.request.get(`${base}/api/trips/${tripId}`)).json();expect(state.trip.startDate).toBe('2026-10-27');expect(state.run?.used).toBe(0);results.whatifNoSearch=true;
+    await page.screenshot({path:`${folder}/workbench-desktop.png`,fullPage:true});
+    await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:'判定与证据',exact:true}).click();
+    await expect(page.locator('.detail-panel')).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    await page.screenshot({path:`${folder}/workbench-mobile.png`,fullPage:true});
+    const otherContext=await browser.newContext();await unlockTestClient(otherContext.request,base);const denied=await otherContext.request.get(`${base}/api/trips/${tripId}`);expect(denied.status()).toBe(404);await otherContext.close();results.ownerIsolation=true;
+    const firstVerdictMs=completedRun.firstVerdictAt&&completedRun.startedAt?Date.parse(completedRun.firstVerdictAt)-Date.parse(completedRun.startedAt):null;
+    const investigationMs=completedRun.completedAt&&completedRun.startedAt?Date.parse(completedRun.completedAt)-Date.parse(completedRun.startedAt):null;
+    results.performance={items:state.trip.items.length,firstVerdictMs,investigationMs,firstTargetMet:firstVerdictMs!==null&&firstVerdictMs<=20000,fullTargetMet:investigationMs!==null&&investigationMs<=90000};
+    await context.storageState({path:'.data/browser-state.json'});
+    await writeFile(`${folder}/flow-state.json`,JSON.stringify(state,null,2));
+    results.shareURL=`${base}/r/${state.trip.shareId}`;
+  }else{
+    const golden=JSON.parse(await readFile('artifacts/golden/hangzhou.json','utf8'));results.shareURL=golden.shareURL;
+  }
+  await page.goto(String(results.shareURL));await expect(page.getByRole('heading',{name:'逐项判定与证据'})).toBeVisible();
+  await page.getByRole('button',{name:'复制分享链接',exact:true}).click();
+  await expect(page.getByRole('button',{name:'已复制链接',exact:true})).toBeVisible();
+  await page.locator('details').evaluateAll(ds=>ds.forEach(d=>(d as HTMLDetailsElement).open=true));
+  await page.setViewportSize({width:1440,height:1000});await page.screenshot({path:`${folder}/report-desktop.png`,fullPage:false});
+  await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:`${folder}/report-mobile.png`,fullPage:false});
+  await page.getByRole('button',{name:'这条判定有帮助',exact:true}).first().click();await expect(page.getByRole('status').first()).toContainText('已记录你的反馈');results.feedback=true;
+  const rechecked=page.waitForResponse(r=>r.url().endsWith('/links')&&r.request().method()==='POST',{timeout:180000});
+  await page.getByRole('button',{name:'核查链接并打印 PDF',exact:true}).click();
+  const recheckedResponse=await rechecked;expect(recheckedResponse.ok()).toBe(true);
+  const printResult=await recheckedResponse.json() as {result:TripState['result']};
+  const freshJudgment=printResult.result?.judgments[0];expect(freshJudgment).toBeTruthy();
+  const shareId=new URL(String(results.shareURL)).pathname.split('/').at(-1);
+  expect((await page.request.post(`${base}/api/feedback`,{data:{shareId,judgmentId:freshJudgment!.id,vote:1}})).ok()).toBe(true);
+  results.feedbackAfterLinkRecheck=true;
+  await expect(page.getByRole('button',{name:'核查链接并打印 PDF',exact:true})).toBeEnabled({timeout:180000});
+  results.printLinkRecheck=true;
+  await page.locator('details').evaluateAll(ds=>ds.forEach(d=>(d as HTMLDetailsElement).open=true));
+  await page.emulateMedia({media:'print'});await page.pdf({path:`${folder}/report.pdf`,format:'A4',printBackground:true});results.printPDF=true;
+  expect(errors).toEqual([]);results.browserErrors=errors;results.passed=true;
+  console.log(JSON.stringify(results));
+}catch(error){results.passed=false;results.error=(error as Error).message;results.browserErrors=errors;await page.screenshot({path:`${folder}/failure.png`,fullPage:true});console.error(error);process.exitCode=1;}
+finally{await writeFile(`${folder}/${process.argv.includes('--visual-only')?'visual':'smoke'}.json`,JSON.stringify(results,null,2));await browser.close();}

@@ -1,0 +1,98 @@
+import { createHash } from 'node:crypto';
+import * as tencentcloud from 'tencentcloud-sdk-nodejs-wsa';
+import { AppError } from '../errors';
+import { cacheGet, cacheSet, emit, getRun, id, reserveSearch, saveCall } from '../store';
+import { now } from '../dates';
+import type { Evidence, SearchCall, SearchParams } from '../domain';
+import { load } from 'cheerio';
+
+type RawResponse = { Pages?: (string | Record<string, unknown>)[]; RequestId?: string; Version?: string; Msg?: string; Error?: { Code: string; Message?: string } };
+type Cached = { call: SearchCall; pages: Evidence[] };
+class Gate {
+  active = 0; waiting: (() => void)[] = []; lastStarts: number[] = [];
+  async enter() {
+    if (this.active >= 4) await new Promise<void>(resolve => this.waiting.push(resolve));
+    this.active++;
+    while (true) {
+      const t = Date.now(); this.lastStarts = this.lastStarts.filter(n => t - n < 1000);
+      if (this.lastStarts.length < 4) { this.lastStarts.push(t); break; }
+      await new Promise(resolve => setTimeout(resolve, 1000 - (t - this.lastStarts[0]) + 10));
+    }
+  }
+  leave() { this.active--; this.waiting.shift()?.(); }
+}
+const gate = new Gate();
+const text = (raw: unknown) => load(String(raw ?? '')).text().replace(/\s+/g, ' ').trim();
+function publishedAt(value: unknown): string | null {
+  const match = String(value ?? '').match(/(20\d{2})[年/.-](\d{1,2})[月/.-](\d{1,2})/);
+  if (!match) return null;
+  const date = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+  return Number.isNaN(Date.parse(date)) ? null : date;
+}
+export function normalizePage(raw: string | Record<string, unknown>, searchCallId: string): Evidence | null {
+  try {
+    const p: Record<string, unknown> = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const url = new URL(String(p.url ?? ''));
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+    url.hash = '';
+    return { id: id(), searchCallId, url: url.toString(), finalUrl: null, title: text(p.title), site: url.hostname,
+      publishedAt: publishedAt(p.date), retrievedAt: now(), passage: text(p.passage).slice(0, 18000), content: text(p.content).slice(0, 26000),
+      score: typeof p.score === 'number' ? p.score : null, authorityLevel: typeof p.authority_level === 'number' ? p.authority_level : null,
+      tier: 4, linkStatus: 'broken', linkCheckedAt: null, pageSha256: null };
+  } catch { return null; }
+}
+async function rawSearch(body: Record<string, unknown>): Promise<RawResponse> {
+  if (process.env.WSA_AUTH_MODE === 'tencent') {
+    const Client = tencentcloud.wsa.v20250508.Client;
+    const client = new Client({ credential: { secretId: process.env.TENCENTCLOUD_SECRET_ID || '', secretKey: process.env.TENCENTCLOUD_SECRET_KEY || '' }, region: '', profile: { httpProfile: { endpoint: 'wsa.tencentcloudapi.com', reqTimeout: 8 } } });
+    return await client.SearchPro(body as { Query: string }) as RawResponse;
+  }
+  if (!process.env.WSA_API_KEY) throw new AppError('SEARCH_NOT_CONFIGURED', '尚未配置元宝搜索密钥。', 503);
+  const res = await fetch('https://api.wsa.cloud.tencent.com/SearchPro', { method: 'POST', headers: { Authorization: `Bearer ${process.env.WSA_API_KEY}`, 'Content-Type': 'application/json; charset=utf-8' }, body: JSON.stringify(body), signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new AppError(`SEARCH_HTTP_${res.status}`, '元宝搜索暂时无法访问。', 502);
+  const json = await res.json();
+  return json.Response ?? json;
+}
+export async function searchPro(runId: string, venueId: string, params: SearchParams, venueCalls: { used: number }): Promise<Cached> {
+  const tier = process.env.WSA_TIER || cacheGet<string>('search:tier') || 'unknown';
+  const body: Record<string, unknown> = { Query: params.query, ...(params.site ? { Site: params.site } : {}), ...(params.freshness ? { Freshness: params.freshness } : {}) };
+  if (tier !== 'lite') { if (params.mode !== undefined) body.Mode = params.mode; if (params.cnt) body.Cnt = params.cnt; if (params.industry) body.Industry = params.industry; }
+  const key = `search:${createHash('sha256').update(JSON.stringify(body)).digest('hex')}`;
+  const cached = cacheGet<Cached>(key);
+  if (cached) {
+    const call: SearchCall = { ...cached.call, id: id(), venueId, calledAt: now(), cacheHit: true, cachedFrom: cached.call.id };
+    const pages = cached.pages.map(p => ({ ...p, id: id(), searchCallId: call.id }));
+    saveCall(runId, call); emit(runId, 'search', call);
+    return { call, pages };
+  }
+  let last: SearchCall | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (venueCalls.used >= 5) throw new AppError('VENUE_BUDGET', '该场馆已达到五次搜索上限。');
+    reserveSearch(runId); venueCalls.used++;
+    await gate.enter();
+    const start = Date.now();
+    const call: SearchCall = { id: id(), venueId, query: params.query, params: { query: params.query, ...(params.site ? {site: params.site} : {}), ...(params.freshness ? {freshness: params.freshness} : {}), ...(body.Mode !== undefined ? {mode: Number(body.Mode)} : {}), ...(body.Cnt !== undefined ? {cnt: Number(body.Cnt)} : {}), ...(body.Industry ? {industry: String(body.Industry)} : {}) }, requestId: null, version: null, msg: null, errorCode: null, resultCount: 0, latencyMs: 0, calledAt: now(), cacheHit: false, cachedFrom: null };
+    try {
+      const response = await rawSearch(body);
+      call.requestId = response.RequestId ?? null; call.version = response.Version ?? null; call.msg = response.Msg || null;
+      if (response.Error) { call.errorCode = response.Error.Code; }
+      const pages = response.Error || /hit black query|blacklist|黑名单/i.test(response.Msg || '') ? [] : (response.Pages ?? []).map(p => normalizePage(p, call.id)).filter((p): p is Evidence => !!p);
+      call.resultCount = pages.length; call.latencyMs = Date.now() - start;
+      saveCall(runId, call); emit(runId, 'search', call); last = call;
+      if (call.version) cacheSet('search:tier', call.version, 24 * 3600_000);
+      if (!response.Error) { const result = { call, pages }; cacheSet(key, result); return result; }
+      if (response.Error.Code === 'InvalidParameter' && ('Mode' in body || 'Cnt' in body || 'Industry' in body) && attempt === 0) {
+        delete body.Mode; delete body.Cnt; delete body.Industry; cacheSet('search:tier', 'lite', 24 * 3600_000); continue;
+      }
+      if (response.Error.Code === 'RequestLimitExceeded' && attempt < 2) { await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 250 : 1000)); continue; }
+      throw new AppError(response.Error.Code, '搜索服务返回错误，相关检查保持尚无法确认。', 502);
+    } catch (error) {
+      if (!last || last.id !== call.id) {
+        call.errorCode = error instanceof AppError ? error.code : 'NETWORK_ERROR'; call.latencyMs = Date.now() - start;
+        saveCall(runId, call); emit(runId, 'search', call);
+      }
+      throw error;
+    } finally { gate.leave(); }
+  }
+  throw new AppError(last?.errorCode ?? 'SEARCH_FAILED', `搜索未完成（已用 ${getRun(runId).used} 次）。`, 502);
+}

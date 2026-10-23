@@ -1,0 +1,27 @@
+import { afterAll, beforeAll, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { database } from '../db';
+import { createTrip, createRun, claimRun, getRun, finishRun, emit, readEvents, tripState, reserveSearch, cacheGet, cacheSet, vote, statistics, saveRecalculation } from '../lib/store';
+import { emptyResult } from '../lib/domain';
+import { item, trip, dossier, closedMonday, hours } from './fixtures';
+const folder=mkdtempSync(join(tmpdir(),'tripproof-test-'));
+beforeAll(()=>{process.env.DATABASE_PATH=join(folder,'test.db');});
+afterAll(()=>{database().sqlite.close();delete (globalThis as {tripproofDB?:unknown}).tripproofDB;rmSync(folder,{recursive:true,force:true});});
+it('队列只能领取一次，事件断线后按id恢复，刷新结果可恢复',()=>{const t=createTrip(trip(),'owner');const r=createRun(t);expect(claimRun()?.id).toBe(r.id);expect(claimRun()).toBe(null);emit(r.id,'plan',{message:'检索'});const first=readEvents(r.id);emit(r.id,'budget',{used:1});expect(readEvents(r.id,first[0].id)).toHaveLength(1);finishRun(r.id,emptyResult());expect(tripState(t).run?.status).toBe('completed');expect(readEvents(r.id).at(-1)?.type).toBe('done');});
+it('预算用完阻止真实调用，不会超出40',()=>{const t=createTrip(trip(),'budget');const r=createRun(t);for(let n=0;n<40;n++)reserveSearch(r.id);expect(()=>reserveSearch(r.id)).toThrow('预算');expect(getRun(r.id).used).toBe(40);finishRun(r.id,emptyResult());});
+it('缓存过期不返回旧事实',()=>{cacheSet('test','value',1000);expect(cacheGet('test')).toBe('value');cacheSet('test','stale',-1);expect(cacheGet('test')).toBe(null);});
+it('反馈幂等更新并持久化',()=>{const before=statistics().votes;vote('j','session',1);vote('j','session',-1);expect(statistics().votes).toBe(before+1);expect(database().sqlite.prepare('SELECT vote FROM feedback WHERE judgment_id=?').get('j')).toEqual({vote:-1});});
+it('重算原子保存且不会入搜索队列，重复应用被版本检查拒绝',()=>{const t=createTrip(trip([item()]),'apply');const next={...t,revision:2,startDate:'2026-10-27'};saveRecalculation(next,emptyResult(),1);expect(claimRun()).toBe(null);expect(tripState(next).run?.used).toBe(0);expect(()=>saveRecalculation(next,emptyResult(),1)).toThrow('更新');});
+it('同一场馆的公告调查合并证据，保留原判定所用事实',()=>{const t=createTrip(trip(),'extra');const a=closedMonday(),b=hours();finishRun(createRun(t).id,{...emptyResult(),dossiers:[dossier([a])]});const extra={...emptyResult(),dossiers:[dossier([b])],announcement:{title:'公告',claims:['测试'],verdict:'unknown' as const,explanation:'待核实',evidenceIds:[]}};finishRun(createRun(t,'announcement').id,extra);expect(tripState(t).result?.dossiers[0].facts.map(f=>f.id).sort()).toEqual([a.id,b.id].sort());});
+it('重新调查期间公开报告保留上一次完整结果，后台仍能读取本轮进度',()=>{
+  const t=createTrip(trip(),'published'), f=hours();
+  finishRun(createRun(t).id,{...emptyResult(),dossiers:[dossier([f])]});
+  const next=createRun(t);
+  expect(tripState(t).run?.id).toBe(next.id);
+  expect(tripState(t).result?.dossiers).toHaveLength(0);
+  expect(tripState(t,{completedOnly:true}).result?.dossiers[0].facts[0].id).toBe(f.id);
+  expect(tripState(t,{completedOnly:true}).runs.some(r=>r.id===next.id&&r.status==='queued')).toBe(true);
+  finishRun(next.id,emptyResult());
+});

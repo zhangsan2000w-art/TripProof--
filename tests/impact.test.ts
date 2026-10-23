@@ -1,0 +1,8 @@
+import { expect, it } from 'vitest';
+import { applyOperations, rippleEffects, suggestions } from '../lib/impact';
+import { judgeTrip } from '../lib/judge';
+import { item, trip, dossier, closedMonday, openDays, hours } from './fixtures';
+it('衔接影响只是重新确认，不会把后续地点全判冲突',()=>{const t=trip([item(),item({id:'b',seq:2,placeName:'下一站',start:'12:15',end:'13:00'}),item({id:'c',seq:3,placeName:'很晚一站',start:'18:00',end:'19:00'})]);const js=judgeTrip(t,[dossier([closedMonday()])]);const ripple=rippleEffects(t,js);expect(ripple.some(r=>r.itemId==='b')).toBe(true);expect(ripple.some(r=>r.itemId==='c')).toBe(false);expect(js.filter(j=>j.verdict==='conflict').every(j=>j.itemId==='a')).toBe(true);});
+it('明确依赖即使跨日也需重新确认',()=>{const t=trip([item(),item({id:'b',day:2,placeName:'后续依赖',dependsOn:['a']})]);expect(rippleEffects(t,judgeTrip(t,[dossier([closedMonday()])])).some(r=>r.itemId==='b'&&r.kind==='EXPLICIT')).toBe(true);});
+it('修复预览独立重判，且不修改输入',()=>{const i=item({start:'16:30',end:null}),t=trip([i,item({id:'b',placeName:'其他',seq:2,start:'20:00',end:'21:00'})]);const ds=[dossier([openDays([1]),hours()])];const proposals=suggestions(t,ds);expect(proposals.length).toBeGreaterThan(0);expect(proposals.length).toBeLessThanOrEqual(3);expect(proposals.some(p=>p.ops[0].type==='shift'&&p.conflictsAfter===0)).toBe(true);expect(t.items[0].start).toBe('16:30');});
+it('删除后清理依赖，不能删空行程',()=>{const t=trip([item(),item({id:'b',seq:2,dependsOn:['a']})]);expect(applyOperations(t,[{type:'drop',itemId:'a'}]).items[0].dependsOn).toEqual([]);expect(()=>applyOperations(trip(),[{type:'drop',itemId:'a'}])).toThrow('全部');});

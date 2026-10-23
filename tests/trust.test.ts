@@ -1,0 +1,34 @@
+import { describe, it, expect } from 'vitest';
+import { factSupported, seasonalHours } from '../lib/facts';
+import { quoteMatches, sourceTier, isPrivateAddress } from '../lib/evidence';
+import { redactValues } from '../lib/llm';
+import { validateTrip } from '../lib/validate';
+import type { Evidence, ExtractedFact } from '../lib/domain';
+import { item, trip } from './fixtures';
+const evidence=(text:string):Evidence=>({id:'e',searchCallId:'c',url:'https://museum.gov.cn/rules',finalUrl:null,title:'规则',site:'museum.gov.cn',publishedAt:null,retrievedAt:new Date().toISOString(),passage:text,content:text,score:null,authorityLevel:null,tier:1,linkStatus:'ok',linkCheckedAt:null,pageSha256:null});
+describe('引文和数据校验',()=>{
+  it('拒绝伪造引文及拼接引文',()=>{expect(quoteMatches('周一开放',evidence('周一闭馆'))).toBe(false);expect(quoteMatches('周一至周日开放',evidence('周一闭馆，周二至周日开放'))).toBe(false);});
+  it('容忍排版空白，不容忍数字变更',()=>{expect(quoteMatches('9:00—17:00',evidence('9:00 — 17:00'))).toBe(true);expect(quoteMatches('9:00—18:00',evidence('9:00—17:00'))).toBe(false);});
+  it('数字必须确实在该条引文里',()=>{const f={evidenceId:'e',quote:'开放时间9:00—17:00',venueMatch:'exact',validFrom:null,validTo:null,kind:'hours',payload:{seasons:[{from:'01-01',to:'12-31',open:'09:00',close:'18:00',lastEntry:null}],weekdays:null}} as ExtractedFact;expect(factSupported(f,evidence(f.quote))).toBe(false);});
+  it('表格相邻的时间仍可逐项验证',()=>{const f={evidenceId:'e',quote:'11月1日-3月31日 8:30 - 16:30 15:30',venueMatch:'exact',validFrom:null,validTo:null,kind:'hours',payload:{seasons:[{from:'11-01',to:'03-31',open:'08:30',close:'16:30',lastEntry:'15:30'}],weekdays:null}} as ExtractedFact;expect(factSupported(f,evidence(f.quote))).toBe(true);});
+  it('雷峰塔季节规则区分停止入园、清场与闭园，不只校验数字出现',()=>{
+    const quote='景区营业时间：8：00--20：00（19：30停止售票及入园，19：45清场，20：00闭园）。【5月1日--10月31日】';
+    const f={evidenceId:'e',quote,venueMatch:'exact',validFrom:null,validTo:null,kind:'hours',payload:{seasons:[{from:'05-01',to:'10-31',open:'08:00',close:'20:00',lastEntry:'19:30'}],weekdays:null}} as ExtractedFact;
+    expect(factSupported(f,evidence(quote))).toBe(true);
+    for(const lastEntry of ['19:45','20:00']) expect(factSupported({...f,payload:{seasons:[{from:'05-01',to:'10-31',open:'08:00',close:'20:00',lastEntry}],weekdays:null}} as ExtractedFact,evidence(quote))).toBe(false);
+    const ticketOnly=quote.replace('停止售票及入园','停止售票');
+    expect(factSupported({...f,quote:ticketOnly},evidence(ticketOnly))).toBe(false);
+  });
+  it('保留同段文字中明确的季节延时及其可核验短引文',()=>{const f={evidenceId:'e',quote:'本馆每日9:00—17:00（16:00停止入馆）',venueMatch:'exact',validFrom:null,validTo:null,kind:'hours',payload:{seasons:[{from:'01-01',to:'12-31',open:'09:00',close:'17:00',lastEntry:'16:00'}],weekdays:null}} as ExtractedFact;const e=evidence(`${f.quote}，周一闭馆（法定节假日除外）。观众需求高峰期6月1日至10月31日延长开放至17:30（16:30停止入馆）。`);const rules=seasonalHours(f,e);expect(rules).toHaveLength(1);expect(rules[0].payload).toMatchObject({seasons:[{from:'06-01',to:'10-31',open:'09:00',close:'17:30',lastEntry:'16:30'}]});expect(quoteMatches(rules[0].quote,e)).toBe(true);});
+  it('天气不能把查询日期当成证据日期',()=>{const f={evidenceId:'e',quote:'杭州明天晴',venueMatch:'exact',validFrom:null,validTo:null,kind:'weather',payload:{date:'2026-10-24',city:'杭州',summary:'晴',precipitationProb:null,warning:null}} as ExtractedFact;expect(factSupported(f,evidence(f.quote))).toBe(false);});
+  it('预约提前天数必须由引文支持',()=>{const f={evidenceId:'e',quote:'可提前7天预约，每日18:00放票',venueMatch:'exact',validFrom:null,validTo:null,kind:'reservation',payload:{required:true,advanceDays:100,releaseTime:'18:00',channel:null,realName:null}} as ExtractedFact;expect(factSupported(f,evidence(f.quote))).toBe(false);});
+  it('临时关闭未发布结束日期仍能保存原文',()=>{const f={evidenceId:'e',quote:'自2026年10月21日起，测试景区临时关闭，恢复日期另行通知',venueMatch:'exact',validFrom:null,validTo:null,kind:'temp_closure',payload:{from:'2026-10-21',to:null,scope:'whole',note:'恢复待定'}} as ExtractedFact;expect(factSupported(f,evidence(f.quote))).toBe(true);});
+  it('夏季延时上下文不能被截成全年每周开放规则',()=>{const f={evidenceId:'e',quote:'每周二至周日9:00-19:30，19:00停止入场',venueMatch:'exact',validFrom:null,validTo:null,kind:'weekly_open',payload:{weekdays:[2,3,4,5,6,0],exceptStatutoryHolidays:false}} as ExtractedFact;expect(factSupported(f,evidence(`目前实行夏季夜间延时开放，至8月31日止，开放时间为${f.quote}。`))).toBe(false);});
+  it('老人优待免预约不能成为所有个人游客的免预约规则',()=>{const f={evidenceId:'e',quote:'70周岁（含）以上老年人及其他符合优待政策的人群无需预约。',venueMatch:'exact',validFrom:null,validTo:null,kind:'reservation',payload:{required:false,advanceDays:null,releaseTime:null,channel:null,realName:null}} as ExtractedFact;expect(factSupported(f,evidence(f.quote))).toBe(false);});
+  it('取消常态化预约准入制属于明确的个人免预约依据',()=>{const f={evidenceId:'e',quote:'浙江省博物馆取消常态化预约准入制。',venueMatch:'exact',validFrom:null,validTo:null,kind:'reservation',payload:{required:false,advanceDays:null,releaseTime:null,channel:null,realName:null}} as ExtractedFact;expect(factSupported(f,evidence(f.quote))).toBe(true);});
+  it('周一上午闭馆不能变成周一全天闭馆',()=>{const f={evidenceId:'e',quote:'周一上午闭馆，12:00开放',venueMatch:'exact',validFrom:null,validTo:null,kind:'weekly_closure',payload:{closedWeekdays:[1],exceptStatutoryHolidays:false}} as ExtractedFact;expect(factSupported(f,evidence(f.quote))).toBe(false);});
+  it('不能仅因org.cn或标题官网升级',()=>expect(sourceTier('fake-museum.org.cn',null)).toBe(4));
+  it.each(['127.0.0.1','10.2.3.4','169.254.169.254','192.168.1.1','::1','::ffff:127.0.0.1','fd00::1','fe80::1'])('阻断内网地址%s',address=>expect(isPrivateAddress(address)).toBe(true));
+  it('字段逐一脱敏不会破坏结构',()=>{const data={sourceText:'测试行程 姓名：张三',note:'电话 13800138000',nested:[{email:'abc@example.com'}]};const clean=redactValues(data);expect(clean.sourceText).not.toContain('张三');expect(clean.nested[0].email).toContain('已移除');expect(Object.keys(clean)).toEqual(Object.keys(data));});
+  it('持久化前剔除个人信息，拒绝循环依赖',()=>{expect(validateTrip(trip([item({sourceText:'参观 联系人：小王'})])).items[0].sourceText).not.toContain('小王');expect(()=>validateTrip(trip([item({id:'a',dependsOn:['b']}),item({id:'b',dependsOn:['a']})]))).toThrow('循环');});
+});
