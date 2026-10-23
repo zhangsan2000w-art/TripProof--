@@ -63,6 +63,11 @@ while (Date.now() - investigation < 900_000) {
   state = await request<TripState>(`/api/trips/${trip.id}`);
   const next = `${state.run?.status} · ${state.run?.used}次新增搜索 · ${state.result?.dossiers.length || 0}份地点资料`;
   if (next !== progress) { console.log(next); progress = next; }
+  if(state.run?.status==='waiting_user'){
+    const question=state.agent?.questions.find(q=>!q.answered);
+    await request(`/api/trips/${trip.id}/messages`,{requestId:crypto.randomUUID(),revision:state.trip.revision,text:'本次暂不补充缺失的时间或商家，请保留相应未知项，完成其余核验并汇总报告。',...(question?{replyTo:question.id}:{})});
+    await new Promise(resolve=>setTimeout(resolve,1000));continue;
+  }
   if (state.run && !['queued', 'running'].includes(state.run.status)) break;
   await new Promise(resolve => setTimeout(resolve, 4000));
 }

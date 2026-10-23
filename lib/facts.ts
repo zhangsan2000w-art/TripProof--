@@ -1,10 +1,26 @@
 import { factOutputSchema, extractedFactSchema, advisoryPayload, exposures, hazards, type Evidence, type Fact, type ExtractedFact, type VenueFact, type PlaceRisk, type Venue } from './domain';
 import { z } from 'zod';
 import { structured } from './llm';
-import { id } from './store';
+import { id, cacheGet, cacheSet } from './store';
 import { normalizeQuote, quoteMatches, sourceTier, registrableDomain, venueSiteDomains, siteLabel } from './evidence';
 import { daysUntil, validDate, weekday } from './dates';
 import { createHash } from 'node:crypto';
+import { recordMetric } from './run-control';
+
+/** Keep complete contiguous rule windows, plus institutional identity in the footer. */
+export function readingText(e: Evidence): string {
+  if (e.content.length <= 6000) return e.content;
+  const spans: [number,number][] = [[0,700]];
+  for (const match of e.content.matchAll(/开放|闭馆|闭园|停止|预约|放票|营业|运营|首班|末班|暂停|恢复|参观|主办|版权所有/g)) {
+    const at=match.index!;
+    if (spans.some(([a,b])=>at>=a&&at<b)) continue;
+    const span: [number,number]=[Math.max(0,at-200),Math.min(e.content.length,at+700)];
+    if (spans.reduce((n,[a,b])=>n+b-a,0)+span[1]-span[0]>4700) break;
+    spans.push(span);
+  }
+  spans.push([Math.max(0,e.content.length-1200),e.content.length]);
+  return spans.sort((a,b)=>a[0]-b[0]).map(([a,b])=>e.content.slice(a,b)).join('\n…\n');
+}
 
 function mentionsTime(value: string, text: string) {
   if ((value === '00:00' || value === '24:00') && /全天开放|24\s*小[时時]|全天候/.test(text)) return true;
@@ -87,7 +103,9 @@ export function factSupported(fact: ExtractedFact, evidence: Evidence): boolean 
   if (fact.kind === 'weekly_open' && fact.payload.weekdays.some(d => closedWeekdays(quote).includes(d))) return false;
   if (fact.kind === 'hours') return fact.payload.seasons.every(s => {
     const annual = s.from === '01-01' && s.to === '12-31';
-    const mentionsMonthDay = (value:string) => new RegExp(`(?:^|[^0-9])0?${Number(value.slice(0,2))}(?:月|[-/.])0?${Number(value.slice(3))}(?:日|号|[^0-9]|$)`).test(normalizeQuote(quote));
+    // Keep table-cell whitespace: removing it merges the previous 16:00 cell
+    // with the following 11月1日 and hides the real date boundary.
+    const mentionsMonthDay = (value:string) => new RegExp(`(?:^|[^0-9])0?${Number(value.slice(0,2))}\\s*(?:月|[-/.])\\s*0?${Number(value.slice(3))}(?:\\s*(?:日|号)|[^0-9]|$)`).test(quote.normalize('NFKC'));
     return validDate(`2000-${s.from}`) && validDate(`2000-${s.to}`) && (annual || (mentionsMonthDay(s.from) && mentionsMonthDay(s.to))) && mentionsTime(s.open, quote) && mentionsTime(s.close, quote) && (!s.lastEntry || mentionsEntry(s.lastEntry, quote));
   });
   if (fact.kind === 'temp_hours') return mentionsTime(fact.payload.open, quote) && mentionsTime(fact.payload.close, quote) && (!fact.payload.lastEntry || mentionsEntry(fact.payload.lastEntry, quote));
@@ -149,7 +167,7 @@ export function seasonalHours(base: ExtractedFact, evidence: Evidence): VenueFac
   if (base.kind !== 'hours' || base.payload.seasons.length !== 1 || base.payload.seasons[0].from !== '01-01' || base.payload.seasons[0].to !== '12-31') return [];
   const out: VenueFact[] = [], opening = base.payload.seasons[0].open;
   for (const text of [evidence.content, evidence.passage]) {
-    const body = text.normalize('NFKC'), baseAt = body.indexOf(base.quote.normalize('NFKC'));
+    const body = normalizeQuote(text), baseAt = body.indexOf(normalizeQuote(base.quote));
     if (baseAt < 0) continue;
     const nearby = body.slice(baseAt, baseAt + base.quote.length + 180);
     const pattern = /(\d{1,2})月(\d{1,2})日(?:至|到|[-—–~～])(\d{1,2})月(\d{1,2})日[^。；;]{0,24}(?:延长|延長|调整|調整)开放至(\d{1,2}:\d{2})\s*\((\d{1,2}:\d{2})停止(?:入馆|入館|入场|入場)\)/g;
@@ -169,9 +187,13 @@ export function seasonalHours(base: ExtractedFact, evidence: Evidence): VenueFac
   return out;
 }
 export async function extractFacts(venueId: string, name: string, city: string, dates: string[], evidence: Evidence[]) {
-  const usable = evidence.filter(e => e.linkStatus !== 'broken');
+  const usable = evidence.filter(e => e.linkStatus !== 'broken').sort((a,b)=>a.url.localeCompare(b.url));
   if (!usable.length) return { canonicalName: name, officialDomain: null, officialEvidenceId: null, facts: [] as Fact[], ambiguities: ['没有已检查且可用的来源链接。'] };
-  const output = await structured('fact', factOutputSchema, `你是旅行规则的证据读取器。只提取指定城市、指定场馆、对应分馆的明确事实，不能做日期计算、推理补全或决策。
+  const input = { venue:name,city,evidence:usable.map((e,index)=>({id:`source-${index}`,url:e.finalUrl||e.url,title:e.title,site:e.site,publishedAt:e.publishedAt,sourceYear:e.retrievedAt.slice(0,4),passage:e.passage.slice(0,2000),text:readingText(e)})) };
+  const cacheKey=`facts:v2:${createHash('sha256').update(JSON.stringify({input,snapshots:usable.map(e=>e.pageSha256||createHash('sha256').update(e.content+e.passage).digest('hex')),model:process.env.LLM_FACT_MODEL||'gpt-6.1-sol'})).digest('hex')}`;
+  const cached=cacheGet<z.infer<typeof factOutputSchema>>(cacheKey);
+  const began=Date.now();
+  const raw = cached ?? await structured('fact', factOutputSchema, `你是旅行规则的证据读取器。只提取指定城市、指定场馆、对应分馆的明确事实，不能做日期计算、推理补全或决策。提取来源自身的适用日期与常规规则，不按某次查询日期改写规则。
 不同来源分别提取，不合并。每个事实 quote 必须来自该 evidenceId 的 text 或 passage 的逐字连续子串，最多80个字符，并包含支持 payload 的完整关键规则（尤其数字、时间）。不要引用标题拼凑事实。
 时间一律HH:mm；全年常规时间的季节范围是01-01到12-31，季节性范围只抄原文。一个hours事实只包含一段季节规则，避免引文过长。weekly_open 只提取明确开放的星期（例如“周二至周日”），不能从“周一闭馆”反推其他天一定开放；原文写“每日/每天/全年无休/周一至周日/全天开放”时提取 weekdays 为0-6的 weekly_open；“全年开放时间”只是全年适用的营业时间，同一句写了闭馆日时不能提取为每天开放；weekly_closure 单独提取。
 weekdays 用0=周日到6=周六。常规闭馆规则里的“法定节假日除外”才设置exceptStatutoryHolidays=true。
@@ -180,7 +202,12 @@ validFrom/validTo 只填明确的生效/失效日期，不是文章发表日期�
 预约required仅表示普通个人游客的规则；不得声称有库存或用户已完成预约。“个人免预约/无需预约”必须提取required=false；团队规则以及老人、儿童、军人等优待人群例外均不提取为普通个人预约规则。只有明确要求才能填true，建议预约不代表强制要求。advanceDays 仅抄明确的提前天数，不能模糊推断含当日的滚动窗口。一个来源的同一预约规则尽量用一条完整事实表示。
 天气必须明确包含目标日期和城市；没有匹配日期不要提取。降雨不表示关闭。transport_duration 仅提取明确起终点和数值的路线参考。
 不属于目标分馆返回 other_branch；无法确定则 unclear，不要为了返回结果标exact。攻略原文和用户截图不能独立当成官方来源。
-officialDomain 只在证据正文/站点身份能证明该域名由场馆所属机构运营时填写。officialIdentityQuote复制正文中的主办单位、版权或官方身份声明；不能仅凭.org.cn后缀判断。不能猜官网。`, [{ type: 'input_text', text: JSON.stringify({ venue: name, city, targetDates: dates, evidence: usable.map(e => ({ id: e.id, title: e.title, site: e.site, publishedAt: e.publishedAt, passage: e.passage.slice(0, 4500), text: e.content.length > 8000 ? `${e.content.slice(0,6000)}\n…\n${e.content.slice(-1800)}` : e.content })) }) }], 9000);
+officialDomain 只在证据正文/站点身份能证明该域名由场馆所属机构运营时填写。officialIdentityQuote复制正文中的主办单位、版权或官方身份声明；不能仅凭.org.cn后缀判断。不能猜官网。`, [{ type: 'input_text', text: JSON.stringify(input) }], 7000);
+  if (!cached) cacheSet(cacheKey,raw);
+  recordMetric('fact_read',Date.now()-began,{cacheHit:!!cached,sources:usable.length});
+  const output=structuredClone(raw), remap=(sourceId:string|null)=>sourceId===null?null:usable[Number(sourceId.replace(/^source-/,''))]?.id ?? sourceId;
+  output.officialEvidenceId=remap(output.officialEvidenceId);
+  output.facts=output.facts.map(f=>({...f,evidenceId:remap(f.evidenceId)!}));
   const actualCity=output.city.replace(/市$/,'').trim(), requestedCity=city.replace(/市$/,'').trim();
   if(actualCity && requestedCity && !actualCity.includes(requestedCity) && !requestedCity.includes(actualCity)) return {canonicalName:name,officialDomain:null,officialEvidenceId:null,facts:[] as Fact[],ambiguities:[`资料指向${output.city}，与确认的${city}不一致，未采用这些事实。`]};
   let officialDomain: string | null = null;

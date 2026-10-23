@@ -136,6 +136,7 @@ export function assessSafety(item: Item, date: string, city: string, risk: Dossi
     if (offRoute || (exposure === 'outdoor' && severity !== 'watch') || severity === 'severe') return { verdict: 'unknown', code: 'HAZARD_ALERT', explanation: `${stem(p.area)}${name}期间可能临时闭园或限流，出发前查景区和当地官方公告。`, basis, notes: [] };
   }
   // Warnings only one secondary site repeats, and forecasts alone, do not change a stop.
+  if(risk.contextStatus==='pending'||risk.contextStatus==='failed')return {verdict:'unknown',code:risk.contextStatus==='pending'?'CONTEXT_PENDING':'CONTEXT_FAILED',explanation:risk.contextStatus==='pending'?'天气预警和区域公告仍在检查；当前规则仅是已核实部分。':'预警或区域公告检查未能完成；已查到的常规开放规则不能据此确认最终可前往。',basis:[],notes:risk.limitations};
   return null;
 }
 

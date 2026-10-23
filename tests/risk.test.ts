@@ -18,6 +18,7 @@ function risk(city: string, facts: Fact[], places: PlaceRisk[]): Dossier {
 const place = (name: string, exposure: PlaceRisk['exposure'], covers: PlaceRisk['covers'] = []): PlaceRisk => ({ place: name, exposure, exposureReason: '测试', covers });
 
 describe('预警与区域公告优先于营业时间', () => {
+  it.each(['pending','failed'] as const)('必要的区域公告检查为 %s 时，常规开放依据不能产生最终可前往',status=>{const i=item(),t=trip([i],{startDate:start}),d=risk('杭州',[],[]);d.contextStatus=status;const js=judgeTrip(t,[dossier([hours()]),d]);expect(js.find(j=>j.type==='safety')).toMatchObject({verdict:'unknown',reasonCode:status==='pending'?'CONTEXT_PENDING':'CONTEXT_FAILED',factIds:[]});expect(itemInsight(i,js,[dossier([hours()]),d],start).state).toBe('verify');});
   it('区域公告按范围覆盖到未点名的海边景点', () => {
     const closure = notice({ scope: '所有涉海景区景点', area: '思明区' });
     const r = risk('厦门', [closure], [place('环岛路沙滩', 'coastal', [{ factId: closure.id, how: 'scope', reason: '思明区海边沙滩' }]), place('厦门市博物馆', 'indoor')]);

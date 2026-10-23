@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { missingTimeNote, prepareDraft, unresolvedTarget } from '../lib/itinerary';
+import { missingTimeNote, prepareDraft, unresolvedTarget, flexibleTransfer } from '../lib/itinerary';
 import { placeNames, searchName, selectVenueSources } from '../lib/source-selection';
 import { judgeItem } from '../lib/judge';
 import { itemInsight } from '../lib/presentation';
@@ -46,3 +46,9 @@ it('可选交通方式不能被确认为某条线路的时刻；明确线路仍�
   expect(judgeItem(i, trip([i]))).toEqual([expect.objectContaining({ reasonCode: 'UNSPECIFIED_ROUTE', verdict: 'unknown' })]);
   expect(unresolvedTarget(item({ kind: 'transport', placeName: '公交9路', sourceText: '从灵昆站乘9路公交到沙角站' }))).toBeNull();
 });
+it('地图步行和打车连线备注保留在下一站，不挤占独立站点和搜索预算',()=>{
+  const raw=(name:string,kind:'scenic'|'transport',text=name)=>{const{id,day,dependsOn,...i}=item({placeName:name,kind,sourceText:text,start:null,end:null});void id;void day;void dependsOn;return {...i,dependsOnPrevious:false};};
+  const draft:Draft={guideMeta:{title:null,publishedAt:null},days:[{dayIndex:1,items:[raw('西湖','scenic'),raw('西湖—断桥','transport','步行20分钟'),raw('断桥','scenic'),raw('断桥—雷峰塔','transport','步行+坐船'),raw('雷峰塔','scenic'),raw('公交9路','transport','从景区乘9路公交返程')]}],recommendations:[],ambiguities:[]};
+  const result=prepareDraft(draft,[]).days[0].items;expect(result.map(i=>i.placeName)).toEqual(['西湖','断桥','雷峰塔','公交9路']);expect(result[1].claimedRules).toContainEqual({kind:'transport',text:'西湖 → 断桥：步行20分钟'});expect(result[2].claimedRules[0].text).toContain('步行+坐船');expect(draft.days[0].items).toHaveLength(6);
+});
+it('有明确时间的步行衔接仍保留，但不使用班次运营时间作可行确认',()=>{const i=item({kind:'transport',placeName:'雷峰塔—河坊街',sourceText:'从雷峰塔步行到河坊街',start:'18:00',end:'18:30'});expect(flexibleTransfer(i)).toBe(true);expect(judgeItem(i,trip([i])).some(j=>j.type==='service_hours')).toBe(false);expect(flexibleTransfer({...i,sourceText:'步行到站后乘公交9路'})).toBe(false);});

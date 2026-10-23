@@ -65,7 +65,7 @@ it('强制保护配置不全时，页面保持入口锁定、接口和健康检�
   expect((await health()).status).toBe(503);
 });
 it('健康检查仅暴露最小存活状态，不公开配置', async () => {
-  enable(); const response = await health(); expect(await response.json()).toEqual({ ok: true });
+  enable(); const response = await health(); expect(await response.json()).toEqual({ ok: true, sourceCommit: null });
 });
 it('正确密码登录、仅服务端 Cookie、回到原报告', async () => {
   enable(); const response = await login(submit('1024', '/r/report?day=2'));

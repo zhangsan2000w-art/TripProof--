@@ -13,7 +13,7 @@ const base = process.env.APP_URL || 'http://127.0.0.1:3000';
 const accessCookie = await testAccessCookie(base);
 const selected = process.argv.find(s => s.startsWith('--case='))?.slice(7);
 const extractionOnly = process.argv.includes('--extract-only');
-const outputDir = 'artifacts/golden';
+const outputDir = process.argv.find(s=>s.startsWith('--out='))?.slice(6) || 'artifacts/golden';
 await mkdir(outputDir, { recursive: true });
 await mkdir('.data/golden', { recursive: true });
 const reports: Record<string, unknown>[] = [];
@@ -63,8 +63,12 @@ for (const spec of goldenCases.filter(c => !selected || c.id === selected)) {
     do {
       await new Promise(resolve => setTimeout(resolve, 2000));
       state = await request<TripState>(`/api/trips/${trip.id}`);
-      if (Date.now() - investigationStarted > 480000) throw new Error('Investigation timed out after 8 minutes.');
-    } while (state.run?.status === 'queued' || state.run?.status === 'running');
+      if(state.run?.status==='waiting_user'){
+        const question=state.agent?.questions.find(q=>!q.answered);
+        await request(`/api/trips/${trip.id}/messages`,{requestId:crypto.randomUUID(),revision:state.trip.revision,text:'本次验收暂不补充未给出的时间或商家，请保留相应未知项，完成其余核验并汇总报告。',...(question?{replyTo:question.id}:{})});
+      }
+      if (Date.now() - investigationStarted > 600000) throw new Error('Investigation timed out after 10 minutes.');
+    } while (state.run?.status === 'queued' || state.run?.status === 'running' || state.run?.status === 'waiting_user');
     if (state.run?.status !== 'completed' || !state.result) throw new Error(`Run failed: ${state.run?.error}`);
     const result = state.result, facts = result.dossiers.flatMap(d => d.facts), evidence = result.dossiers.flatMap(d => d.evidence), calls = result.dossiers.flatMap(d => d.calls);
     const violations: string[] = [];
@@ -73,7 +77,8 @@ for (const spec of goldenCases.filter(c => !selected || c.id === selected)) {
       if (['availability'].includes(judgment.type) && judgment.verdict !== 'unknown') violations.push(`Realtime falsely confirmed: ${judgment.id}`);
       if (judgment.verdict === 'confirmed' || judgment.verdict === 'conflict') {
         const basis = facts.filter(f => judgment.factIds.includes(f.id));
-        if (judgment.type !== 'arrival_fit' && (!basis.length || basis.some(f => f.linkStatus !== 'ok'))) violations.push(`Missing usable source: ${judgment.id}`);
+        const computedFromPlan = judgment.type === 'arrival_fit' || (judgment.type === 'connection_fit' && judgment.reasonCode === 'PLAN_TIME_OVERLAP');
+        if (!computedFromPlan && (!basis.length || basis.some(f => f.linkStatus !== 'ok'))) violations.push(`Missing usable source: ${judgment.id}`);
       }
     }
     if (!calls.some(c => c.requestId && !c.errorCode)) violations.push('No real SearchPro RequestId');
@@ -90,7 +95,7 @@ for (const spec of goldenCases.filter(c => !selected || c.id === selected)) {
 }
 await writeFile(`${outputDir}/${selected ? `${selected}-` : ''}summary.json`, JSON.stringify({ testedAt: new Date().toISOString(), reports, failures }, null, 2));
 // Feature only freshly passing golden reports on the home page; keep earlier ones for cases not rerun.
-if (!extractionOnly) {
+if (!extractionOnly && !process.argv.includes('--no-feature')) {
   const featured = JSON.parse(await readFile(sampleListPath(), 'utf8').catch(() => '{"reports":[]}')) as { note?: string; reports: { case: string; shareId: string }[] };
   for (const report of reports) if (report.passed && 'shareURL' in report && typeof report.shareURL === 'string') featured.reports = [...featured.reports.filter(r => r.case !== String(report.case)), { case: String(report.case), shareId: report.shareURL.split('/r/')[1] }];
   featured.reports.sort((a, b) => goldenCases.findIndex(c => c.id === a.case) - goldenCases.findIndex(c => c.id === b.case));

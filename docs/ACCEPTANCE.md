@@ -1,5 +1,7 @@
 # TripProof 验收记录
 
+**最新 Agent 升级验收（2026-10-24）见 [AGENT-ACCEPTANCE.md](AGENT-ACCEPTANCE.md)**：包含本次四个完整 golden case、上海回归、六站冷/热缓存、恢复与修复闭环，以及当前性能差距。以下保留首次交付及历次上线记录；测试数量与性能不可混用。
+
 验收日期：2026-10-23，北京时间。环境：macOS、Node.js 26.12.1、pnpm 12.14.0、已安装的 Google Chrome。模型为当前 GPT 中转平台的 `gpt-6.1-sol`，使用 Responses 接口；搜索为元宝 SearchPro standard。本文与 `artifacts/` 中的实际结果配套阅读。
 
 以下性能、截图及案例耗时为首次完整验收记录。随后按实际使用反馈改版了报告 UX、默认日期和来源筛选，并添加了试部署入口密码；当前单元测试为 10 个文件、131 项，改版细节见 [`UX-REVISION.md`](UX-REVISION.md)，入口保护的追加验收见本文末尾，最新 golden 结果以 `artifacts/golden/summary.json` 为准。
@@ -71,7 +73,7 @@
 
 ## 入口密码追加验收
 
-入口由服务端验证，所有页面、报告、业务 API 与 SSE 都需要先解锁。Cookie 使用独立随机密钥签名和 HttpOnly，有效期 7 天，HTTPS 下启用 Secure。普通 Node/VPS 使用 SameSite=Lax 并禁止嵌入；魔搭镜像只允许官方两个站点嵌入，使用 Secure、SameSite=None、Partitioned 兼容平台框架。密码错误按来源和全实例限速，计数存入 SQLite；更改密码或签名密钥可使已有 Cookie 失效。公开健康检查仅返回 `{ok:true}`。
+入口由服务端验证，所有页面、报告、业务 API 与 SSE 都需要先解锁。Cookie 使用独立随机密钥签名和 HttpOnly，有效期 7 天，HTTPS 下启用 Secure。普通 Node/VPS 使用 SameSite=Lax 并禁止嵌入；魔搭镜像只允许官方两个站点嵌入，使用 Secure、SameSite=None、Partitioned 兼容平台框架。密码错误按来源和全实例限速，计数存入 SQLite；更改密码或签名密钥可使已有 Cookie 失效。当前公开健康检查返回 `ok` 与发布源码 SHA `sourceCommit`，不包含配置或用户数据；本地无发布元数据时 SHA 为 null。
 
 `pnpm test` 的 131 项和类型检查通过；生产构建及 HTTP 记录见下文。HTTP 验收覆盖受保护页面和 API、假 PDF 路径、图片优化入口、伪造 Cookie、伪造代理头、跨站提交、登录与锁定访问。四份已存 golden 报告在锁定时返回 307，解锁后返回 200；这是访问保护回归，没有重新运行四个案例的完整提取与搜索。
 

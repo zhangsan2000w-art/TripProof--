@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { TripInput, Item, Judgment, Dossier, Operation, Ripple, Suggestion } from './domain';
+import type { TripInput, Item, Judgment, Dossier, Operation, Ripple, Suggestion, Alternative } from './domain';
 import { judgeTrip, summary } from './judge';
 import { minutes, formatMinutes, dateForDay, inSeason } from './dates';
 import { AppError } from './errors';
@@ -23,11 +23,19 @@ export function rippleEffects(trip: TripInput, judgments: Judgment[]): Ripple[] 
   }
   return out;
 }
-export function applyOperations(trip: TripInput, ops: Operation[]): TripInput {
+export function applyOperations(trip: TripInput, ops: Operation[], alternatives: Alternative[] = []): TripInput {
   const copy = structuredClone(trip);
   for (const op of ops) {
     const item = copy.items.find(i => i.id === op.itemId);
     if (!item) throw new AppError('INVALID_OPERATION', '修改目标已不在行程中，请刷新后重试。');
+    if (op.type === 'replace') {
+      const candidate = alternatives.find(a => a.itemId === item.id && a.dossier.venue.id === op.alternativeId);
+      if (!candidate || candidate.dossier.venue.city.replace(/市$/,'') !== (item.city || trip.destinationCity).replace(/市$/,'')) throw new AppError('INVALID_ALTERNATIVE','替代场馆必须来自这项安排已保存的同城候选。');
+      item.placeName = candidate.name; item.city = candidate.dossier.venue.city; item.proposedBy = 'agent';
+      item.activity = `Agent 建议：以${candidate.name}替代原安排`;
+      item.sourceText = `Agent 建议替代场馆：${candidate.name}。原安排：${item.sourceText}`.slice(0,1500);
+      item.sourceImage = null; item.claimedRules = [];
+    }
     if (op.type === 'drop') { copy.items = copy.items.filter(i => i.id !== item.id).map(i => ({ ...i, dependsOn: i.dependsOn.filter(id => id !== item.id) })); }
     if (op.type === 'shift') { item.start = op.start; item.end = op.end; }
     if (op.type === 'swap') {

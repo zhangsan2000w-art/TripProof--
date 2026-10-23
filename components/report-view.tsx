@@ -164,7 +164,7 @@ function Stop({ item, insight, index, trip, result, open, onToggle, images, onIm
     <div className="stop-card">
       <div className="stop-row" onClick={onToggle}>
         <div className="stop-text">
-          <div className="stop-title"><h3>{item.placeName}</h3><span className="stop-kind">{kindLabels[item.kind]}{item.start ? ` · ${item.start}${item.end ? `—${item.end}` : ''}` : ''}{short && !open ? ` · ${short}` : ''}</span></div>
+          <div className="stop-title"><h3>{item.placeName}</h3><span className="stop-kind">{kindLabels[item.kind]}{item.proposedBy === 'agent' ? ' · Agent 建议' : ''}{item.start ? ` · ${item.start}${item.end ? `—${item.end}` : ''}` : ''}{short && !open ? ` · ${short}` : ''}</span></div>
           <p className={`stop-msg tone-${insight.state}`}>{insight.message}</p>
         </div>
         <PlanStatus state={insight.state}/>

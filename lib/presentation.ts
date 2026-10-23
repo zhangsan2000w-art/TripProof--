@@ -18,7 +18,7 @@ export type Basis = 'official' | 'authority' | 'consensus' | 'reference';
 export const tierLabels = ['', '官方来源', '权威来源', '平台参考', '普通网页'];
 export const basisLabels: Record<Basis, string> = { official: '官方', authority: '权威来源', consensus: '多源一致', reference: '仅供参考' };
 export type RuleHighlight = { label: string; value: string; note?: string; verified: boolean; basis?: Basis; tone?: 'good' | 'bad' | 'warn' | 'muted' };
-export const safetyLabels: Record<string, string> = { AREA_CLOSED: '已公告关闭', SERVICE_SUSPENDED: '已公告停运', HAZARD_EXPOSED: '不建议前往', HAZARD_ALERT: '预警期间', SERVICE_ALERT: '以停运公告为准', CLOSURE_REPORTED: '有关闭消息待证实' };
+export const safetyLabels: Record<string, string> = { AREA_CLOSED: '已公告关闭', SERVICE_SUSPENDED: '已公告停运', HAZARD_EXPOSED: '不建议前往', HAZARD_ALERT: '预警期间', SERVICE_ALERT: '以停运公告为准', CLOSURE_REPORTED: '有关闭消息待证实', CONTEXT_PENDING:'公告仍在检查', CONTEXT_FAILED:'公告检查未完成' };
 export type ItemInsight = {
   state: PlanState; message: string; rules: RuleHighlight[]; updates: Judgment[];
   conflicts: Judgment[]; citations: { evidence: Evidence; quote: string }[];
@@ -205,9 +205,9 @@ export function dayWeather(judgments: Judgment[], dossiers: Dossier[], date: str
   const advisories = dayAdvisories(dossiers, date).map((a, n) => ({ a, n })).sort((x, y) => reach(y.a.id) - reach(x.a.id) || x.n - y.n).map(x => x.a);
   const evidence = dossiers.flatMap(d => d.evidence);
   const notices = advisories.map(a => ({ advisory: a, name: noticeName(a), evidence: evidence.find(e => e.id === a.evidenceId) ?? null }));
-  const checked = dossiers.some(d => d.venue.key.startsWith('risk:') && d.venue.investigationDates.includes(date) && d.searchedScope.length > 0);
+  const checked = dossiers.some(d => d.venue.key.startsWith('risk:') && d.venue.investigationDates.includes(date) && d.searchedScope.length > 0 && d.contextStatus!=='pending' && d.contextStatus!=='failed');
   const risk = forecast?.reasonCode === 'WEATHER_RISK' || notices.length > 0;
-  return { forecast, notices, checked, risk, blocked: safety.filter(j => j.verdict === 'conflict').length, alerted: safety.filter(j => j.verdict === 'unknown').length };
+  return { forecast, notices, checked, risk, blocked: safety.filter(j => j.verdict === 'conflict').length, alerted: safety.filter(j => j.verdict === 'unknown'&&j.factIds.length>0).length };
 }
 
 export function alternativeInsight(trip: TripInput, alternative: Alternative) {

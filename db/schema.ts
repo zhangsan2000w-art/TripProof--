@@ -1,5 +1,6 @@
-import { sqliteTable, text, integer, primaryKey, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, primaryKey, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import type { Trip, Run, RunResult, RunEvent, EventType, Item } from '@/lib/domain';
+import type { AgentCheckpoint, AgentMessage, AgentProposal } from '@/lib/agent-types';
 export const trips = sqliteTable('trips', {
   id: text('id').primaryKey(), shareId: text('share_id').notNull().unique(), owner: text('owner').notNull(),
   body: text('body', { mode: 'json' }).$type<Trip>().notNull(), updatedAt: text('updated_at').notNull(),
@@ -25,3 +26,7 @@ export const cache = sqliteTable('cache', { key: text('key').primaryKey(), paylo
 export const feedback = sqliteTable('feedback', { judgmentId: text('judgment_id').notNull(), session: text('session').notNull(), vote: integer('vote').notNull(), at: text('at').notNull() }, t => [primaryKey({ columns: [t.judgmentId, t.session] })]);
 export const usage = sqliteTable('usage', { key: text('key').primaryKey(), count: integer('count').notNull().default(0) });
 export const accessAttempts = sqliteTable('access_attempts', { key: text('key').primaryKey(), failures: integer('failures').notNull().default(0), expiresAt: integer('expires_at').notNull() });
+export const agentCheckpoints = sqliteTable('agent_checkpoints', { runId: text('run_id').primaryKey().references(() => runs.id), payload: text('payload', { mode: 'json' }).$type<AgentCheckpoint>().notNull() });
+export const agentMessages = sqliteTable('agent_messages', { id: text('id').primaryKey(), tripId: text('trip_id').notNull().references(() => trips.id), runId: text('run_id'), requestId: text('request_id'), payload: text('payload', { mode: 'json' }).$type<AgentMessage>().notNull() }, t => [index('agent_messages_trip').on(t.tripId),uniqueIndex('agent_messages_request').on(t.tripId,t.requestId)]);
+export const agentProposals = sqliteTable('agent_proposals', { id: text('id').primaryKey(), tripId: text('trip_id').notNull().references(() => trips.id), runId: text('run_id').notNull(), payload: text('payload', { mode: 'json' }).$type<AgentProposal>().notNull() });
+export const venueUsage = sqliteTable('venue_usage', { runId: text('run_id').notNull(), venueId: text('venue_id').notNull(), count: integer('count').notNull() }, t => [primaryKey({ columns: [t.runId,t.venueId] })]);

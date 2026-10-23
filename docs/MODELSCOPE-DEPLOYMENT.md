@@ -1,5 +1,7 @@
 # 魔搭免费试部署记录
 
+Agent 升级的最新本地验收见 [AGENT-ACCEPTANCE.md](AGENT-ACCEPTANCE.md)。下面先保留历史部署数据；当前运行版本请按本文末尾的源码 SHA 方法核对，不要把历史 SHA 当作最新发布版本。
+
 核验日期：2026-10-23，Asia/Shanghai。
 
 - 应用入口：[TripProof 全屏运行页](https://www.modelscope.cn/studios/ld0574/1023isgood?mode=full)。
@@ -41,3 +43,18 @@
 本地 158 项测试、类型检查、无警告生产构建通过；空数据库恢复四份报告、重复初始化、清单丢失恢复、冲突回滚、私有数据排除均通过。本次直接恢复此前真实调查结果，没有重新调用 GPT 或 SearchPro 跑四轮 golden。实际记录和截图保存在本地 `artifacts/samples/`，不提交到 Git。
 
 完整源码现同步到 [GitHub 私有仓库](https://github.com/ld0574/TripProof)，主分支为 `main`。密钥、原始截图、本地数据库和实际调用原始产物均不进入仓库。
+
+## Agent 升级的发布与源码版本核对
+
+在干净的 `main` 上提交并推送后执行：
+
+```sh
+pnpm deploy:modelscope:branch
+git push modelscope refs/remotes/origin/modelscope:refs/heads/master
+```
+
+该流程从源码白名单生成部署包，保留魔搭原有 Git 历史与四份精选报告，不会上传本地数据库、输入图文或凭据。随后在魔搭设置页“重新部署”。不能只凭 Git 推送成功判断容器已升级。
+
+部署分支的 `.modelscope-source.json` 记录源 `main` 的完整 SHA，并复制到运行镜像。上线后读取 `https://ld0574-1023isgood.ms.show/api/health`，确认 `ok=true`，且 `sourceCommit` 等于 `git rev-parse origin/main`；再确认 `origin/modelscope` 和魔搭 `master` 指向相同部署提交。健康检查公开的只有状态和源码 SHA，不包含环境变量、密钥、对话或行程。
+
+发版后检查入口密码、首页四份 demo、既有报告、Agent 消息接口与新调查，实际 HTTP 结果和截图保存在本地 `artifacts/agent-deployment/`。新消息和检查点采用兼容性建表扩展；既有报告不转换为私人对话，不重新排入搜索队列。手机的应用布局和魔搭外层框架需分别检查，不能用本地窄屏通过替代平台验收。

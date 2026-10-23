@@ -21,6 +21,7 @@ export const draftSchema = z.object({
 export type Draft = z.infer<typeof draftSchema>;
 export const itemSchema = extractedItemSchema.omit({ dependsOnPrevious: true }).extend({
   id: z.string().min(1).max(80), day: z.number().int().min(1).max(30), dependsOn: z.array(z.string()).max(40),
+  proposedBy: z.literal('agent').optional(),
 });
 export type Item = z.infer<typeof itemSchema>;
 export const tripInputSchema = z.object({
@@ -103,12 +104,13 @@ export type Venue = { id: string; key: string; canonicalName: string; city: stri
 export const exposures = ['coastal', 'mountain', 'water', 'outdoor', 'indoor', 'transport'] as const;
 export type Exposure = typeof exposures[number];
 export type PlaceRisk = { place: string; exposure: Exposure; exposureReason: string; covers: { factId: string; how: 'named' | 'scope' | 'area'; reason: string }[] };
-export type Dossier = { venue: Venue; facts: Fact[]; evidence: Evidence[]; calls: SearchCall[]; searchedScope: string[]; limitations: string[]; createdAt: string; places?: PlaceRisk[] };
+export type Dossier = { venue: Venue; facts: Fact[]; evidence: Evidence[]; calls: SearchCall[]; searchedScope: string[]; limitations: string[]; createdAt: string; places?: PlaceRisk[]; advisoryReadUrls?: string[]; advisoryReadKeys?: string[]; contextStatus?: 'pending' | 'complete' | 'failed' };
 export type Ripple = { itemId: string; causeItemId: string; reason: string; kind: 'EXPLICIT' | 'SAME_VENUE' | 'TIMING_CHAIN' | 'LEG_ORIGIN_CHANGED' };
 export const opSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('shift'), itemId: z.string(), start: timeString, end: timeString.nullable() }),
   z.object({ type: z.literal('swap'), itemId: z.string(), otherItemId: z.string() }),
   z.object({ type: z.literal('drop'), itemId: z.string() }),
+  z.object({ type: z.literal('replace'), itemId: z.string(), alternativeId: z.string() }),
 ]);
 export type Operation = z.infer<typeof opSchema>;
 export type Suggestion = { id: string; title: string; ops: Operation[]; cost: number; conflictsBefore: number; conflictsAfter: number; unknownsAfter: number; judgments: Judgment[]; itemsAfter: Item[]; warning: string | null };
@@ -116,8 +118,8 @@ export type RunResult = { dossiers: Dossier[]; judgments: Judgment[]; ripples: R
 export type Alternative = { itemId: string; name: string; reason: string; dossier: Dossier; judgments: Judgment[] };
 export type AnnouncementResult = { title: string; claims: string[]; verdict: Verdict; explanation: string; evidenceIds: string[] };
 export type RunKind = 'investigation' | 'announcement' | 'alternatives';
-export type Run = { id: string; tripId: string; kind: RunKind; status: 'queued' | 'running' | 'completed' | 'failed'; createdAt: string; updatedAt: string; startedAt: string | null; completedAt: string | null; firstVerdictAt: string | null; used: number; limit: number; input: Record<string, unknown>; result: RunResult | null; error: string | null; tripRevision: number };
-export type EventType = 'plan' | 'search' | 'evidence' | 'fact' | 'verdict' | 'ripple' | 'suggestion' | 'budget' | 'done' | 'error';
+export type Run = { id: string; tripId: string; kind: RunKind; status: 'queued' | 'running' | 'waiting_user' | 'cancelled' | 'completed' | 'failed'; createdAt: string; updatedAt: string; startedAt: string | null; completedAt: string | null; firstVerdictAt: string | null; used: number; limit: number; input: Record<string, unknown>; result: RunResult | null; error: string | null; tripRevision: number };
+export type EventType = 'plan' | 'search' | 'evidence' | 'fact' | 'verdict' | 'ripple' | 'suggestion' | 'budget' | 'done' | 'error' | 'agent_step' | 'agent_message' | 'agent_question' | 'agent_progress' | 'agent_proposal' | 'waiting_user' | 'cancelled';
 export type RunEvent = { id: number; runId: string; type: EventType; data: unknown; at: string };
-export type TripState = { trip: Trip; run: Run | null; runs: Pick<Run, 'id' | 'kind' | 'status' | 'createdAt' | 'tripRevision'>[]; result: RunResult | null; events: RunEvent[] };
+export type TripState = { trip: Trip; run: Run | null; runs: Pick<Run, 'id' | 'kind' | 'status' | 'createdAt' | 'tripRevision'>[]; result: RunResult | null; events: RunEvent[]; agent?: import('./agent-types').AgentView | null };
 export const emptyResult = (): RunResult => ({ dossiers: [], judgments: [], ripples: [], suggestions: [], alternatives: [], announcement: null, limitations: [] });

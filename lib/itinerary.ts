@@ -4,6 +4,14 @@ import { AppError } from './errors';
 /** Formatting copied from social posts is not part of a place's name. */
 export const readableText = (text: string) => text.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
 
+/** This controls applicable checks, never establishes opening hours or admission rights. */
+export function openArea(item: Pick<Item, 'placeName' | 'kind'>) {
+  return ['scenic','other'].includes(item.kind) && /步行街|街区|老街|直街|武康路|安福路|五原路|河坊街|夜市|^(?:外滩|陆家嘴)$/.test(readableText(item.placeName));
+}
+export function flexibleTransfer(item: Pick<Item,'kind'|'sourceText'|'placeName'>) {
+  return item.kind==='transport'&&/步行|打车|自驾|驾车|骑行/.test(readableText(item.sourceText))&&!/公交|巴士|地铁|轨道|轮渡|游船|坐船|乘船|高铁|火车|班车|航班|客运|[sS][12]/.test(`${item.placeName} ${item.sourceText}`);
+}
+
 /** Only explicit joins are split; “与/和” can be part of an institution's proper name. */
 export function joinedVenues(name: string) {
   const parts = readableText(name).split(/\s*[&＋+]\s*/);
@@ -14,6 +22,14 @@ export function joinedVenues(name: string) {
 export function prepareDraft(draft: Draft, imageIndices: number[]): Draft {
   const clean = structuredClone(draft);
   for (const day of clean.days) {
+    // A map's short connector labels describe the link to the next stop, not another venue or a scheduled service.
+    day.items=day.items.filter((item,index,all)=>{
+      const note=readableText(item.sourceText).replace(/\s+/g,''),next=all[index+1],previous=all[index-1];
+      if(item.kind!=='transport'||item.start||item.end||!previous||!next||previous.kind==='transport'||next.kind==='transport'||!/^(?:步行|打车|自驾|驾车|骑行|步行\+坐船)(?:约?\d+(?:[-~～]\d+)?分钟)?$/.test(note))return true;
+      const text=`${previous.placeName} → ${next.placeName}：${item.sourceText}`;
+      if(!next.claimedRules.some(c=>c.kind==='transport'&&c.text===text))next.claimedRules.push({kind:'transport',text});
+      return false;
+    });
     day.items = day.items.filter(i => i.sourceText.trim()).flatMap(item => {
       const names = ['museum', 'scenic', 'show'].includes(item.kind) ? joinedVenues(item.placeName) : [];
       const base = { ...item, sourceImage: item.sourceImage && imageIndices.includes(item.sourceImage) ? item.sourceImage : null };

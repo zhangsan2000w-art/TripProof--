@@ -1,6 +1,7 @@
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const output = resolve(root, process.argv.find(value => value.startsWith('--out='))?.slice(6) || 'tmp/modelscope');
@@ -19,6 +20,8 @@ cpSync(join(root, 'deploy/modelscope/entrypoint.sh'), join(output, 'deploy/model
 cpSync(join(root, 'deploy/modelscope/Dockerfile'), join(output, 'Dockerfile'));
 cpSync(join(root, 'deploy/modelscope/README.md'), join(output, 'README.md'));
 cpSync(join(root, 'proxy.ts'), join(output, 'proxy.ts'));
+const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+writeFileSync(join(output, '.modelscope-source.json'), `${JSON.stringify({ sourceBranch: 'main', sourceCommit }, null, 2)}\n`);
 writeFileSync(join(output, '.gitignore'), 'node_modules/\n.next/\n.env*\n.data/\n*.db*\n.DS_Store\n');
 function countFiles(path: string): number { return readdirSync(path, { withFileTypes: true }).reduce((sum, entry) => sum + (entry.isDirectory() ? countFiles(join(path, entry.name)) : 1), 0); }
 console.log(`魔搭上传目录已生成：${output}\n共 ${countFiles(output)} 个文件；精选报告包会随代码发布，不含本地环境变量、上传的原始文件或报告数据库。`);
