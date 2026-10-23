@@ -23,7 +23,8 @@
     "test:images": "tsx --env-file=.env.local scripts/image-smoke.ts",
     "test:ux": "tsx --env-file=.env.local scripts/ux-smoke.ts",
     "test:access": "tsx --env-file=.env.local scripts/access-smoke.ts",
-    "deploy:modelscope:prepare": "tsx scripts/prepare-modelscope.ts"
+    "deploy:modelscope:prepare": "tsx scripts/prepare-modelscope.ts",
+    "deploy:modelscope:branch": "tsx scripts/modelscope-branch.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
