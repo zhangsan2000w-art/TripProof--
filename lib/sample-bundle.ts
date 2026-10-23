@@ -4,8 +4,8 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { database } from '@/db';
 import * as tables from '@/db/schema';
-import { tripInputSchema, type RunResult } from './domain';
-import { getSharedTrip, tripState } from './store';
+import { guideSchema, tripInputSchema, type RunResult } from './domain';
+import { exportGuide, getSharedTrip, guideSummary, saveGuide, tripState } from './store';
 import { sampleManifestPath } from './sample-manifest';
 export { sampleManifestPath } from './sample-manifest';
 
@@ -23,7 +23,7 @@ const resultSchema = z.object({
 const bundleSchema = z.object({
   version: z.literal(1), exportedAt: z.iso.datetime(),
   reports: z.array(z.object({
-    case: z.string().min(1), trip: tripSchema,
+    case: z.string().min(1), trip: tripSchema, guide: guideSchema.nullable().optional(),
     run: z.object({
       id: z.string().min(1), createdAt: z.iso.datetime(), updatedAt: z.iso.datetime(),
       startedAt: z.iso.datetime().nullable(), completedAt: z.iso.datetime(), firstVerdictAt: z.iso.datetime().nullable(),
@@ -52,7 +52,7 @@ export function exportFeaturedSamples(): SampleBundle {
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
       if (!trip || !state?.result || !run?.completedAt || !state.result.judgments.length) throw new Error(`示例 ${name} 缺少已完成的报告，请先完成 golden 验收。`);
       const { id, createdAt, updatedAt, startedAt, completedAt, firstVerdictAt, used, limit } = run;
-      return { case: name, trip, run: { id, createdAt, updatedAt, startedAt, completedAt, firstVerdictAt, used, limit, result: state.result } };
+      return { case: name, trip, guide: exportGuide(trip.id), run: { id, createdAt, updatedAt, startedAt, completedAt, firstVerdictAt, used, limit, result: state.result } };
     }),
   });
 }
@@ -64,7 +64,7 @@ export function initializeSampleReports(path = 'data/sample-reports.json') {
   const { db, sqlite } = database();
   const imported = sqlite.transaction(() => {
     let count = 0;
-    for (const { trip, run } of bundle.reports) {
+    for (const { trip, run, guide } of bundle.reports) {
       const existingTrip = db.select().from(tables.trips).where(eq(tables.trips.id, trip.id)).get();
       const existingShare = getSharedTrip(trip.shareId);
       if ((existingTrip && existingTrip.shareId !== trip.shareId) || (existingShare && existingShare.id !== trip.id)) throw new Error('示例标识与已有行程冲突，已取消导入。');
@@ -74,6 +74,8 @@ export function initializeSampleReports(path = 'data/sample-reports.json') {
         for (const item of trip.items) db.insert(tables.items).values({ id: `${trip.id}:${item.id}`, tripId: trip.id, payload: item }).run();
         count++;
       }
+      // Older bundles had no guide; add one without touching an existing guide.
+      if (guide && !guideSummary(trip.id)) saveGuide(trip.id, guide);
       const existingRun = db.select().from(tables.runs).where(eq(tables.runs.id, run.id)).get();
       if (existingRun && (existingRun.tripId !== trip.id || existingRun.kind !== 'investigation' || existingRun.status !== 'completed' || existingRun.tripRevision !== trip.revision)) throw new Error('示例调查与已有任务冲突，已取消导入。');
       if (existingRun) continue;

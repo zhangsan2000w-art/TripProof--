@@ -21,4 +21,4 @@ cpSync(join(root, 'deploy/modelscope/README.md'), join(output, 'README.md'));
 cpSync(join(root, 'proxy.ts'), join(output, 'proxy.ts'));
 writeFileSync(join(output, '.gitignore'), 'node_modules/\n.next/\n.env*\n.data/\n*.db*\n.DS_Store\n');
 function countFiles(path: string): number { return readdirSync(path, { withFileTypes: true }).reduce((sum, entry) => sum + (entry.isDirectory() ? countFiles(join(path, entry.name)) : 1), 0); }
-console.log(`魔搭上传目录已生成：${output}\n共 ${countFiles(output)} 个文件；精选报告包会随代码发布，不含本地环境变量、上传图片或报告数据库。`);
+console.log(`魔搭上传目录已生成：${output}\n共 ${countFiles(output)} 个文件；精选报告包会随代码发布，不含本地环境变量、上传的原始文件或报告数据库。`);

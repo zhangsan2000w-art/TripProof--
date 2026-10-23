@@ -17,8 +17,8 @@ export default function Home() {
         <h1>攻略说能去，<br/>那天<em>真的能去吗？</em></h1>
         <p className="lead">上传小红书截图或粘贴攻略文字，按你的出行日期逐站核对。</p>
         <ul className="hero-points">
-          <li><Siren size={18}/><span><strong>预警和关闭公告优先</strong>台风、暴雨预警或景区临时关闭时，不会给你“可前往”。</span></li>
-          <li><CalendarCheck size={18}/><span><strong>规则对上你的日期</strong>闭馆日、停止入场、预约放票，按那一天来算。</span></li>
+          <li><CalendarCheck size={18}/><span><strong>规则对上你的日期</strong>闭馆日、停止入场、预约放票，按你去的那一天来算。</span></li>
+          <li><Siren size={18}/><span><strong>临时关闭照样查出来</strong>景区发了临时关闭公告，就不会再按平时的开放时间说能去。</span></li>
           <li><Link2 size={18}/><span><strong>每条结论都有出处</strong>点开就是原文引文和链接；查不到就标“待核实”。</span></li>
         </ul>
       </div>
@@ -38,7 +38,7 @@ export default function Home() {
       <div className="section-head"><h2>怎么核对的</h2><span>三步，每一步都留有记录</span></div>
       <div className="step-grid">
         <article className="card"><span className="step-no">1</span><ScanText size={22}/><h3>读懂原来的安排</h3><p>截图和文字都可以。整理成行程后由你校对，没写的时间不替你补。</p></article>
-        <article className="card"><span className="step-no">2</span><Fingerprint size={22}/><h3>先查预警，再查规则</h3><p>先搜目的地的气象预警和区域关闭公告，再查每一站的开放、入场和预约规则。</p></article>
+        <article className="card"><span className="step-no">2</span><Fingerprint size={22}/><h3>逐站查规则</h3><p>搜索官方与可靠来源，核对每一站的开放、入场、预约规则和临时关闭公告。</p></article>
         <article className="card"><span className="step-no">3</span><Route size={22}/><h3>发现问题，少改一点</h3><p>标出需要调整和待核实的地点，给出换天或换时段的方案，应用前先预览。</p></article>
       </div>
     </section>

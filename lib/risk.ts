@@ -92,10 +92,9 @@ export function scopeName(a: Advisory) {
   return p.scope.startsWith(area) || /^(?:全市|本市)/.test(p.scope) ? p.scope : `${area}${p.scope}`;
 }
 export type SafetyOutcome = { verdict: 'conflict' | 'unknown'; code: string; explanation: string; basis: Fact[]; notes: string[] };
-const severeForecast = /特大暴雨|大暴雨|暴雨|台风|暴雪|冰雹|(?:[89]|1[0-7])\s*级(?:以上)?(?:大风|阵风)?/;
 
-/** Decide one stop's safety on its date from the city's notices and forecast. */
-export function assessSafety(item: Item, date: string, city: string, risk: Dossier | undefined, weather: Dossier | undefined): SafetyOutcome | null {
+/** Decide one stop's safety on its date from the city's confirmed notices. */
+export function assessSafety(item: Item, date: string, city: string, risk: Dossier | undefined): SafetyOutcome | null {
   const diff = daysUntil(date);
   if (!risk || diff < 0 || diff > hazardWindowDays) return null;
   const place: PlaceRisk | undefined = risk.places?.find(p => p.place === item.placeName);
@@ -136,30 +135,13 @@ export function assessSafety(item: Item, date: string, city: string, risk: Dossi
     if (exposure === 'transport' && (severity === 'severe' || (severity === 'high' && transportHazards.has(p.hazard)))) return { verdict: 'unknown', code: 'SERVICE_ALERT', explanation: `${stem(p.area)}${name}期间可能停运，以当天停运公告为准。`, basis, notes: ['公交、轨道、轮渡和打车都可能停运或受限；时刻表不能说明能正常出行。'] };
     if (offRoute || (exposure === 'outdoor' && severity !== 'watch') || severity === 'severe') return { verdict: 'unknown', code: 'HAZARD_ALERT', explanation: `${stem(p.area)}${name}期间可能临时闭园或限流，出发前查景区和当地官方公告。`, basis, notes: [] };
   }
-  // A warning that only one secondary site repeats never rules a stop out,
-  // but the stops it would affect are not marked as fine either.
-  const reported = !top && strongest(warnings);
-  if (reported) {
-    const severity = advisorySeverity(reported)!, p = reported.payload, name = warningName(p);
-    const affected = exposure === 'transport' ? severity === 'severe' || (severity === 'high' && transportHazards.has(p.hazard))
-      : exposedTo(p.hazard, exposure) || severity === 'severe' || (exposure === 'outdoor' && severity === 'high');
-    if (affected) return { verdict: 'unknown', code: 'HAZARD_REPORTED',
-      explanation: `有网页转述${stem(p.area)}${name}，未经官方证实；${exposure === 'transport' ? '可能停运' : `${label}可能临时关闭`}，出发前查官方公告。`,
-      basis: [reported], notes: ['只有转载来源，没有据此判定不能去；也不按平时的开放时间标为可前往。'] };
-  }
-
-  // 3. No warning yet, but the forecast for that day is severe.
-  const forecast = (weather?.facts ?? []).filter((f): f is Fact & { kind: 'weather' } => f.kind === 'weather' && usable(f) && f.payload.date === date)
-    .find(f => severeForecast.test(`${f.payload.summary} ${f.payload.warning ?? ''}`));
-  if (forecast && (exposure === 'coastal' || exposure === 'mountain' || exposure === 'water' || exposure === 'outdoor')) {
-    return { verdict: 'unknown', code: 'HAZARD_FORECAST', explanation: `预报这天${forecast.payload.summary.replace(/[。.]$/, '')}，${label === '露天点位' ? '露天行程' : label}可能受影响；出发前查当地预警和景区公告。`, basis: [forecast], notes: [] };
-  }
+  // Warnings only one secondary site repeats, and forecasts alone, do not change a stop.
   return null;
 }
 
-export function judgeSafety(item: Item, trip: TripInput, risk: Dossier | undefined, weather: Dossier | undefined): Judgment | null {
+export function judgeSafety(item: Item, trip: TripInput, risk: Dossier | undefined): Judgment | null {
   const date = dateForDay(trip.startDate, item.day), city = item.city || trip.destinationCity;
-  const outcome = assessSafety(item, date, city, risk, weather);
+  const outcome = assessSafety(item, date, city, risk);
   if (!outcome) return null;
   return {
     id: `safety-${item.id}-${date}-${outcome.code}-${outcome.basis.map(f => f.id).sort().join('.')}`.slice(0, 160),
@@ -169,17 +151,12 @@ export function judgeSafety(item: Item, trip: TripInput, risk: Dossier | undefin
   };
 }
 
-/**
- * Notices in force on one trip day for the day banner: confirmed ones first, strongest first.
- * Notices only one secondary site repeats are kept and marked, so the day never reads as "no warning".
- */
-export function dayAdvisories(dossiers: Dossier[], date: string): (Advisory & { confirmed: boolean })[] {
+/** Confirmed notices in force on one trip day, strongest first. */
+export function dayAdvisories(dossiers: Dossier[], date: string): Advisory[] {
   const notices = dossiers.filter(d => d.venue.key.startsWith('risk:')).flatMap(d => d.facts).filter(isAdvisory).filter(usable)
     .filter(a => advisoryFresh(a) && advisoryActive(a, date) && a.payload.type !== 'reopen');
   const weight = (a: Advisory) => a.payload.type === 'closure' || a.payload.type === 'suspension' ? 4 : severityRank[advisorySeverity(a) ?? 'watch'];
   const seen = new Set<string>();
-  return notices.map(a => ({ ...a, confirmed: corroborated(a, notices) }))
-    .filter(a => a.confirmed || advisorySeverity(a) || a.payload.type === 'closure' || a.payload.type === 'suspension')
-    .sort((a, b) => Number(b.confirmed) - Number(a.confirmed) || weight(b) - weight(a) || a.tier - b.tier)
+  return notices.filter(a => corroborated(a, notices)).sort((a, b) => weight(b) - weight(a) || a.tier - b.tier)
     .filter(a => { const key = `${a.payload.type}:${a.payload.hazard}:${a.payload.level}:${a.payload.scope ?? a.payload.area}`; if (seen.has(key)) return false; seen.add(key); return true; });
 }

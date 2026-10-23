@@ -3,7 +3,7 @@ import { cookies } from 'next/headers';
 import { LockKeyhole } from 'lucide-react';
 import { ACCESS_COOKIE, accessConfig, validAccessToken } from '@/lib/access';
 import './globals.css';
-export const metadata: Metadata = { title: 'TripProof — 攻略出发前核对', description: '上传或粘贴收藏的旅行攻略，按你的出行日期先查预警和区域关闭公告，再逐站核对开放、入场和预约规则；每条结论都有出处。' };
+export const metadata: Metadata = { title: 'TripProof — 攻略出发前核对', description: '上传或粘贴收藏的旅行攻略，按你的出行日期逐站核对开放、入场、预约规则和临时关闭公告；每条结论都有出处。' };
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const config = accessConfig();
   const unlocked = config.mode === 'on' && validAccessToken((await cookies()).get(ACCESS_COOKIE)?.value, config);

@@ -3,10 +3,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { database } from '../db';
-import { emptyResult, type Trip } from '../lib/domain';
+import { emptyResult, guideSchema, type Trip } from '../lib/domain';
 import { exportFeaturedSamples, initializeSampleReports, parseSampleBundle, sampleManifestPath, type SampleBundle } from '../lib/sample-bundle';
 import { sampleReports } from '../lib/samples';
-import { claimRun, createTrip, getSharedTrip, getTrip, tripState } from '../lib/store';
+import { claimRun, createTrip, getSharedTrip, getTrip, guideImage, guideSummary, tripState } from '../lib/store';
 import { item, trip } from './fixtures';
 
 const previousDatabase = process.env.DATABASE_PATH;
@@ -98,6 +98,26 @@ it('新导出的示例包替换旧精选；本地新跑的报告不被旧包覆�
   initializeSampleReports(later);
   expect(sampleReports().map(r => r.shareId)).toContain('share-hangzhou');
   expect(sampleReports().map(r => r.shareId)).not.toContain('share-hangzhou-2');
+});
+
+const jpeg = (bytes: string) => `data:image/jpeg;base64,${Buffer.from(bytes).toString('base64')}`;
+it('原攻略图文随行程保存，示例包导出后能完整恢复', () => {
+  const { bundle, path } = setup();
+  const own = createTrip(trip(), 'owner', { text: 'Day 1 西湖', images: [{ sourceIndex: 1, data: jpeg('first') }, { sourceIndex: 2, data: jpeg('second') }] });
+  expect(guideSummary(own.id)).toEqual({ text: 'Day 1 西湖', images: [1, 2] });
+  expect(guideImage(own.id, 2)?.data.toString()).toBe('second');
+  expect(guideImage(own.id, 3)).toBeNull();
+  bundle.reports[0].guide = { text: '杭州攻略', images: [{ sourceIndex: 1, data: jpeg('hz') }] };
+  writeFileSync(path, JSON.stringify(bundle)); initializeSampleReports(path);
+  expect(guideSummary('hangzhou')).toEqual({ text: '杭州攻略', images: [1] });
+  expect(exportFeaturedSamples().reports[0].guide).toEqual(bundle.reports[0].guide);
+  expect(guideSummary('linan')).toBeNull();
+});
+
+it('原攻略只接受图片数据，编号不能重复', () => {
+  expect(guideSchema.safeParse({ text: '', images: [{ sourceIndex: 1, data: 'data:text/html;base64,PGI+' }] }).success).toBe(false);
+  expect(guideSchema.safeParse({ text: '', images: [{ sourceIndex: 1, data: jpeg('a') }, { sourceIndex: 1, data: jpeg('b') }] }).success).toBe(false);
+  expect(guideSchema.safeParse({ text: '只有文字', images: [] }).success).toBe(true);
 });
 
 it('清单中的失效链接会恢复为有完整结果的示例', () => {

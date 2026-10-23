@@ -21,6 +21,8 @@ function connect() {
     CREATE TABLE IF NOT EXISTS feedback (judgment_id TEXT NOT NULL, session TEXT NOT NULL, vote INTEGER NOT NULL, at TEXT NOT NULL, PRIMARY KEY(judgment_id, session));
     CREATE TABLE IF NOT EXISTS usage (key TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS access_attempts (key TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS guides (trip_id TEXT PRIMARY KEY, text TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS guide_images (trip_id TEXT NOT NULL, idx INTEGER NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(trip_id, idx));
   `);
   for (const name of ['venues', 'search_calls', 'evidence', 'facts', 'judgments', 'ripples', 'suggestions']) {
     sqlite.exec(`CREATE TABLE IF NOT EXISTS ${name} (id TEXT NOT NULL, run_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(run_id,id))`);

@@ -18,7 +18,7 @@ export type Basis = 'official' | 'authority' | 'consensus' | 'reference';
 export const tierLabels = ['', '官方来源', '权威来源', '平台参考', '普通网页'];
 export const basisLabels: Record<Basis, string> = { official: '官方', authority: '权威来源', consensus: '多源一致', reference: '仅供参考' };
 export type RuleHighlight = { label: string; value: string; note?: string; verified: boolean; basis?: Basis; tone?: 'good' | 'bad' | 'warn' | 'muted' };
-export const safetyLabels: Record<string, string> = { AREA_CLOSED: '已公告关闭', SERVICE_SUSPENDED: '已公告停运', HAZARD_EXPOSED: '不建议前往', HAZARD_ALERT: '预警期间', SERVICE_ALERT: '以停运公告为准', HAZARD_FORECAST: '预报恶劣天气', CLOSURE_REPORTED: '有关闭消息待证实', HAZARD_REPORTED: '有预警报道待证实' };
+export const safetyLabels: Record<string, string> = { AREA_CLOSED: '已公告关闭', SERVICE_SUSPENDED: '已公告停运', HAZARD_EXPOSED: '不建议前往', HAZARD_ALERT: '预警期间', SERVICE_ALERT: '以停运公告为准', CLOSURE_REPORTED: '有关闭消息待证实' };
 export type ItemInsight = {
   state: PlanState; message: string; rules: RuleHighlight[]; updates: Judgment[];
   conflicts: Judgment[]; citations: { evidence: Evidence; quote: string }[];
@@ -68,7 +68,8 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   if (openCheck && place) {
     const basis = basisOf(facts.filter(f => openCheck.factIds.includes(f.id)));
     if (openCheck.verdict === 'conflict') rules.push({ label: '当天', value: ['TEMP_CLOSED', 'CLOSED_UNTIL_NOTICE'].includes(openCheck.reasonCode) ? '临时关闭' : `${weekdayLabel(date)}闭馆`, verified: true, basis, tone: 'bad', note: openCheck.reasonCode === 'CLOSED_UNTIL_NOTICE' ? '未见恢复开放通知' : undefined });
-    else if (safety?.verdict === 'conflict') rules.push({ label: '当天', value: safety.reasonCode === 'HAZARD_EXPOSED' ? '不建议前往' : '已公告关闭', verified: true, basis: basisOf(safetyFacts), tone: 'bad', note: openCheck.verdict === 'confirmed' ? '常规开放规则不适用于这天' : undefined });
+    // An announced closure is already shown in its own tile; the day tile would only repeat it.
+    else if (safety?.verdict === 'conflict') { /* see the notice tile */ }
     else if (openCheck.verdict === 'confirmed') rules.push({ label: '当天', value: '正常开放', verified: true, basis, tone: 'good', note: `${md(date.slice(5))} ${weekdayLabel(date)}` });
     else rules.push({ label: '当天', value: openCheck.reasonCode === 'OPEN_ENDED_CLOSURE' ? '恢复时间待确认' : '未确认', verified: false, tone: openCheck.reasonCode === 'OPEN_ENDED_CLOSURE' ? 'bad' : 'muted',
       note: openCheck.reasonCode === 'OPEN_ENDED_CLOSURE' ? '查到临时关闭报道' : openCheck.reasonCode === 'SOURCES_DISAGREE' ? '来源说法不一致' : '未查到闭馆规则' });
@@ -203,7 +204,7 @@ export function dayWeather(judgments: Judgment[], dossiers: Dossier[], date: str
   const reach = (id: string) => safety.reduce((n, j) => n + (j.factIds.includes(id) ? (j.verdict === 'conflict' ? 10 : 1) : 0), 0);
   const advisories = dayAdvisories(dossiers, date).map((a, n) => ({ a, n })).sort((x, y) => reach(y.a.id) - reach(x.a.id) || x.n - y.n).map(x => x.a);
   const evidence = dossiers.flatMap(d => d.evidence);
-  const notices = advisories.map(a => ({ advisory: a, name: noticeName(a), confirmed: a.confirmed, evidence: evidence.find(e => e.id === a.evidenceId) ?? null }));
+  const notices = advisories.map(a => ({ advisory: a, name: noticeName(a), evidence: evidence.find(e => e.id === a.evidenceId) ?? null }));
   const checked = dossiers.some(d => d.venue.key.startsWith('risk:') && d.venue.investigationDates.includes(date) && d.searchedScope.length > 0);
   const risk = forecast?.reasonCode === 'WEATHER_RISK' || notices.length > 0;
   return { forecast, notices, checked, risk, blocked: safety.filter(j => j.verdict === 'conflict').length, alerted: safety.filter(j => j.verdict === 'unknown').length };
@@ -246,10 +247,8 @@ export function tripVerdict(trip: TripInput, judgments: Judgment[], dossiers: Do
     return { tone: 'bad', headline: `有 ${counts.adjust} 处安排需要调整`, detail: `${names.slice(0, 3).join('、')}${names.length > 3 ? ' 等' : ''}${weekly ? '在你去的那天闭馆，去了会扑空。' : '的问题和改法见下方。'}` };
   }
   const alertDays = risk.filter(r => r.alerted);
-  if (alertDays.length) return { tone: 'warn', headline: `${alertDays.map(r => shortDate(r.date)).join('、')}${alertDays[0].notices[0] ? `${alertDays[0].notices[0].confirmed ? '有' : '有网页报道'}${alertDays[0].notices[0].name}` : '预报有恶劣天气'}，${alertDays.reduce((n, r) => n + r.alerted, 0)} 处出发前再确认`, detail: `${alertDays[0].notices[0] && !alertDays[0].notices[0].confirmed ? '这条消息只有转载来源，没有据此判定不能去；但' : ''}预警期间景区可能临时关闭、交通可能停运，出发当天再看一次官方公告。` };
+  if (alertDays.length) return { tone: 'warn', headline: `${alertDays.map(r => shortDate(r.date)).join('、')}${alertDays[0].notices[0] ? `有${alertDays[0].notices[0].name}` : '有预警'}，${alertDays.reduce((n, r) => n + r.alerted, 0)} 处出发前再确认`, detail: '预警期间景区可能临时关闭、交通可能停运，出发当天再看一次官方公告。' };
   if (counts.verify * 2 >= trip.items.length) return { tone: 'info', headline: `${counts.verify} 个地点没查到可靠规则，出发前逐一确认`, detail: '查不到的不会说成能去；已查到的规则和原文都列在每个地点下面。' };
-  const rainy = risk.filter(r => r.forecast?.reasonCode === 'WEATHER_RISK');
-  if (rainy.length) return { tone: 'warn', headline: '按规则走得通，但要留意天气', detail: `${rainy.map(r => shortDate(r.date)).join('、')}预报有雨，户外安排注意安全。` };
   if (counts.verify) return { tone: 'info', headline: `大部分安排已核实，${counts.verify} 处出发前再确认`, detail: '待核实的地点没查到可靠规则，或来源说法不一致。' };
   if (counts.needs_time) return { tone: 'info', headline: '规则都查到了，补上到达时间再核对一遍', detail: '营业时间和停止入场已核实；填上计划到达时间，就能判断来不来得及。' };
   return { tone: 'good', headline: '按查到的规则，这趟行程走得通', detail: '不代表已有门票或预约名额，出发前在官方渠道预约。' };

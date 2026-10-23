@@ -1,8 +1,9 @@
 'use client';
 import { useState } from 'react';
 import Link from 'next/link';
-import { Printer, Share2, Check, Download, ArrowUpRight, FileSearch, AlertCircle, LoaderCircle, AlertTriangle, CloudRain, Ticket, Clock3, CircleHelp, ChevronDown, Bus, Siren, Route } from 'lucide-react';
-import type { Trip, RunResult, Judgment, Item } from '@/lib/domain';
+import { Printer, Share2, Check, Download, ArrowUpRight, FileSearch, AlertCircle, LoaderCircle, AlertTriangle, Ticket, Clock3, CircleHelp, ChevronDown, Bus, Siren, Route } from 'lucide-react';
+import type { Trip, RunResult, Judgment, Item, GuideSummary } from '@/lib/domain';
+import { GuideCard, GuideViewer, StopSource } from './guide-view';
 import { Header } from './brand';
 import { Button } from './ui/button';
 import { EvidenceAudit, GuideUpdate, KeySources, RuleGrid, SourceCard, checkLabels } from './evidence-panel';
@@ -16,7 +17,8 @@ import { DayAlert, DayHead, NoticeList, PlanStatus, ProofLine, StatusBar, Verdic
 
 type Todo = { tone: 'bad' | 'warn' | 'info' | 'muted'; title: string; text: string; href?: string; icon: typeof AlertTriangle };
 
-export function ReportView({ trip, initialResult, checkedAt, updating = false }: { trip: Trip; initialResult: RunResult | null; checkedAt: string | null; updating?: boolean }) {
+export function ReportView({ trip, initialResult, checkedAt, updating = false, guide = null }: { trip: Trip; initialResult: RunResult | null; checkedAt: string | null; updating?: boolean; guide?: GuideSummary | null }) {
+  const [viewing, setViewing] = useState<number | null>(null), images = guide?.images ?? [];
   const [copied, setCopied] = useState(false), [printing, setPrinting] = useState(false), [error, setError] = useState(''), [result, setResult] = useState(initialResult);
   const [day, setDay] = useState(0), [filter, setFilter] = useState<'all' | PlanState>('all'), [includeEvidence, setIncludeEvidence] = useState(false), [open, setOpen] = useState<Set<string>>(new Set());
   const calls = [...new Map((result?.dossiers.flatMap(d => d.calls) ?? []).map(c => [c.id, c])).values()];
@@ -45,7 +47,7 @@ export function ReportView({ trip, initialResult, checkedAt, updating = false }:
   const { counts } = insights;
   // Days in a row with the same notices share one block.
   const notices: (typeof views)[] = [];
-  for (const v of views.filter(v => v.weather.notices.length)) {
+  for (const v of views.filter(v => v.weather.notices.length && v.weather.blocked + v.weather.alerted > 0)) {
     const key = (x: (typeof views)[number]) => x.weather.notices.map(n => n.advisory.id).join();
     const last = notices.at(-1), prev = last?.at(-1);
     if (last && prev && prev.day + 1 === v.day && key(prev) === key(v)) last.push(v); else notices.push([v]);
@@ -68,7 +70,6 @@ export function ReportView({ trip, initialResult, checkedAt, updating = false }:
     ...[...adjustGroups.values()].map(g => ({ tone: 'bad' as const, icon: g.safety ? Siren : AlertTriangle, title: `第 ${g.day} 天 · ${g.names.slice(0, 4).join('、')}${g.names.length > 4 ? ` 等 ${g.names.length} 处` : ''}`, href: `#stop-${g.ids[0]}`,
       text: `${g.text}${result?.suggestions.some(s => s.ops.some(op => g.ids.includes(op.itemId))) ? '下方有改法。' : ''}` })),
     ...(alerted.length ? [{ tone: 'warn' as const, icon: Bus, title: `${alerted.length} 处要在出发当天再确认`, text: `${alerted.slice(0, 4).map(i => i.item.placeName).join('、')}${alerted.length > 4 ? ' 等' : ''}：预警期间可能停运或临时关闭，以当天公告为准。`, href: `#stop-${alerted[0].item.id}` }] : []),
-    ...views.filter(v => !v.weather.notices.length && v.weather.forecast?.reasonCode === 'WEATHER_RISK').slice(0, 1).map(v => ({ tone: 'warn' as const, icon: CloudRain, title: `${monthDay(v.date)} 天气`, text: v.weather.forecast!.explanation.replace(/^\d{4}-\d{2}-\d{2}\s*/, ''), href: `#day-${v.day}` })),
     ...insights.items.filter(({ insight }) => insight.state !== 'adjust' && insight.rules.some(r => r.label === '预约 / 购票' && r.value === '需提前预约')).map(({ item }) => {
       const j = judgments.find(j => j.itemId === item.id && j.type === 'reservation_rule');
       const detail = (j?.explanation ?? '').replace('此结论不表示已有名额或已完成预约。', '').replace(/^需提前预约[；，。]?/, '').trim();
@@ -93,8 +94,10 @@ export function ReportView({ trip, initialResult, checkedAt, updating = false }:
         <ProofLine result={result}/>
       </VerdictCard>
 
+      {guide && (guide.images.length > 0 || guide.text) && <GuideCard shareId={trip.shareId} guide={guide} onOpen={setViewing}/>}
+
       {notices.length > 0 && <section className="card notices-card" aria-label="预警与区域公告">
-        <h2><Siren size={17}/>预警与区域公告<span>先看这一项：生效中的官方公告优先于营业时间</span></h2>
+        <h2><Siren size={17}/>关闭公告与预警<span>官方公告优先于平台上的营业时间</span></h2>
         {notices.map(group => { const blocked = group.reduce((n, v) => n + v.weather.blocked, 0), alerted = group.reduce((n, v) => n + v.weather.alerted, 0);
           return <div className="notices-day" key={group[0].day}><h3>{group.map(v => `${monthDay(v.date)} ${weekdayLabel(v.date)}`).join('、')}<span>{blocked ? `${blocked} 个地点不建议去` : ''}{blocked && alerted ? ' · ' : ''}{alerted ? `${alerted} 处待当天确认` : ''}</span></h3><NoticeList notices={group[0].weather.notices}/></div>; })}
       </section>}
@@ -113,7 +116,7 @@ export function ReportView({ trip, initialResult, checkedAt, updating = false }:
         return <section className="report-day day" id={`day-${v.day}`} key={v.day}>
           <DayHead day={v.day} date={v.date} weather={v.weather} result={result} stops={all.length}/>
           <DayAlert weather={v.weather} compact/>
-          <ol className="timeline">{stops.map(({ item, insight }) => <Stop key={item.id} item={item} insight={insight} index={all.findIndex(i => i.id === item.id)} trip={trip} result={result} open={open.has(item.id)} onToggle={() => toggle(item.id)}/>)}</ol>
+          <ol className="timeline">{stops.map(({ item, insight }) => <Stop key={item.id} item={item} insight={insight} index={all.findIndex(i => i.id === item.id)} trip={trip} result={result} open={open.has(item.id)} onToggle={() => toggle(item.id)} images={images} onImage={setViewing}/>)}</ol>
         </section>;
       })}
 
@@ -129,7 +132,7 @@ export function ReportView({ trip, initialResult, checkedAt, updating = false }:
       {result.announcement && <section className="card announcement-result"><div><h2>{result.announcement.title}</h2><Status verdict={result.announcement.verdict}/></div><p>{result.announcement.explanation}</p>{result.announcement.claims.map((c, n) => <p key={n}>{c}</p>)}{result.dossiers.flatMap(d => d.evidence).filter(e => result.announcement!.evidenceIds.includes(e.id)).slice(0, 5).map(e => <SourceCard key={e.id} evidence={e} quotes={result.dossiers.flatMap(d => d.facts).filter(f => f.evidenceId === e.id).map(f => f.quote).slice(0, 2)}/>)}</section>}
       {!!result.alternatives.length && <section className="section"><div className="section-head"><h2>独立核查的替代场馆</h2></div>{result.alternatives.map(a => { const view = alternativeInsight(trip, a); if (!view) return null; return <article className="card report-item alt-card" key={a.name}><div className="alt-head"><div><h3>{a.name}</h3><p>{a.reason}</p></div><PlanStatus state={view.insight.state}/></div><p className={`stop-takeaway tone-${view.insight.state}`}>{view.insight.message}</p><RuleGrid rules={view.insight.rules}/><EvidenceAudit item={view.item} judgments={a.judgments} dossiers={[a.dossier]}/></article>; })}</section>}
 
-      <section className="fineprint"><h2>这份报告的边界</h2><p>预警和关闭公告按检索到的官方与权威来源判断，临近出发请再看一次当地气象台和景区公告。预约是否完成、当天是否有票，请到官方渠道确认；交通与排队受实时情况影响。</p><p>来源标签：官方＝政府或场馆官网；权威来源＝主流或当地官方媒体；多源一致＝至少两个独立来源说法相同；仅供参考＝只查到个别来源。没查到临时公告不代表没有临时变更；上传的原图不会公开。</p></section>
+      <section className="fineprint"><h2>这份报告的边界</h2><p>预约是否完成、当天是否有票，请到官方渠道确认；交通与排队受实时情况影响。临时关闭以官方公告为准，临近出发再看一次景区公告。</p><p>来源标签：官方＝政府或场馆官网；权威来源＝主流或当地官方媒体；多源一致＝至少两个独立来源说法相同；仅供参考＝只查到个别来源。没查到临时公告不代表没有临时变更。原攻略图文只在提交时选择附上才会随报告展示。</p></section>
       <details className="report-appendix"><summary>查询卡片与调查记录<span>{calls.length} 条检索记录</span><ChevronDown size={14} className="chev"/></summary>
         <div className="appendix-body">
           {cards.length > 0 && <><div className="section-head"><h2>查询卡片</h2><span>可下载的结论与来源</span></div>{cards.map((judgment, n) => <QueryCard key={judgment.id} index={n + 1} judgment={judgment} trip={trip} result={result}/>)}</>}
@@ -139,7 +142,8 @@ export function ReportView({ trip, initialResult, checkedAt, updating = false }:
       </details>
     </>}
     <footer className="page-foot"><span className="mono">TRIPPROOF · {trip.shareId.slice(0, 8).toUpperCase()}</span><span>来源可点击核对；没注明发布日期的来源不虚构日期。</span></footer>
-  </main></>;
+  </main>
+  {viewing !== null && <GuideViewer shareId={trip.shareId} images={images} at={viewing} onChange={setViewing}/>}</>;
 }
 
 function suggestionTitle(ops: RunResult['suggestions'][number]['ops'], trip: Trip) {
@@ -151,7 +155,7 @@ function suggestionTitle(ops: RunResult['suggestions'][number]['ops'], trip: Tri
   }).join('，');
 }
 
-function Stop({ item, insight, index, trip, result, open, onToggle }: { item: Item; insight: ItemInsight; index: number; trip: Trip; result: RunResult; open: boolean; onToggle: () => void }) {
+function Stop({ item, insight, index, trip, result, open, onToggle, images, onImage }: { item: Item; insight: ItemInsight; index: number; trip: Trip; result: RunResult; open: boolean; onToggle: () => void; images: number[]; onImage: (n: number) => void }) {
   const ripples = result.ripples.filter(r => r.itemId === item.id);
   const leg = item.kind === 'transport';
   const short = ['fits', 'needs_time'].includes(insight.state) ? insight.rules.find(r => /营业时间|运营时间/.test(r.label) && r.verified)?.value : undefined;
@@ -167,6 +171,7 @@ function Stop({ item, insight, index, trip, result, open, onToggle }: { item: It
         <button type="button" className="stop-toggle no-print" aria-expanded={open} aria-label={`${open ? '收起' : '展开'}${item.placeName}的详情`} onClick={e => { e.stopPropagation(); onToggle(); }}><ChevronDown size={16}/></button>
       </div>
       <div className="stop-body">
+        <StopSource item={item} images={images} onOpen={onImage}/>
         <RuleGrid rules={insight.rules}/>
         <GuideUpdate item={item} insight={insight}/>
         {ripples.map((r, n) => <p className="ripple-note" key={n}>需重新确认：{r.reason}</p>)}

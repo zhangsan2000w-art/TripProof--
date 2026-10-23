@@ -7,6 +7,7 @@ import type { Draft, Item, Trip, TripState } from '../lib/domain';
 import { normalizeQuote, quoteMatches } from '../lib/evidence';
 import { summary } from '../lib/summary';
 import { testAccessCookie } from './test-access';
+import { caseGuide } from './case-guide';
 
 const base = process.env.APP_URL || 'http://127.0.0.1:3000';
 const accessCookie = await testAccessCookie(base);
@@ -55,7 +56,8 @@ for (const spec of goldenCases.filter(c => !selected || c.id === selected)) {
     if (recall < .9 || inventedTime || recommendationsAsItems.length) throw new Error(`Extraction mismatch: recall=${recall}, inventedTime=${inventedTime}, recommendationItems=${recommendationsAsItems.map(i => i.placeName)}`);
     console.log(`[golden:${spec.id}] extraction ${items.length} items, recall ${Math.round(recall * 100)}%, ${Math.round(extractionMs/1000)}s`);
     if (extractionOnly) { await writeFile(`${outputDir}/${spec.id}-extraction.json`, JSON.stringify({ case: spec.id, recall, extractionMs, draft }, null, 2)); continue; }
-    const { trip } = await request<{ trip: Trip }>('/api/trips', { title: spec.name, startDate: spec.startDate, originCity: '', destinationCity: spec.city, arriveDay1: null, leaveLastDay: null, mode: 'transit', guidePublishedAt: draft.guideMeta.publishedAt, items });
+    const guide = await caseGuide(spec.images, spec.text);
+    const { trip } = await request<{ trip: Trip }>('/api/trips', { title: spec.name, startDate: spec.startDate, originCity: '', destinationCity: spec.city, arriveDay1: null, leaveLastDay: null, mode: 'transit', guidePublishedAt: draft.guideMeta.publishedAt, items, guide });
     const { runId } = await request<{ runId: string }>(`/api/trips/${trip.id}/runs`, {});
     const investigationStarted = Date.now(); let state: TripState;
     do {

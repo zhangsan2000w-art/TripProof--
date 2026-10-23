@@ -7,7 +7,7 @@ import { kinds } from '@/lib/domain';
 import { api, ApiError } from '@/lib/client';
 import { submitExtraction, waitForExtraction } from '@/lib/extraction-client';
 import { missingTimeNote } from '@/lib/itinerary';
-import { prepareImages } from '@/lib/images-client';
+import { prepareDisplayImages, prepareImages } from '@/lib/images-client';
 import { Button } from './ui/button';
 import { dateForDay, tomorrow, weekdayLabel } from '@/lib/dates';
 
@@ -20,7 +20,7 @@ export function HomeForm() {
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [draft, setDraft] = useState<Draft | null>(null), [items, setItems] = useState<Item[]>([]);
   const [startDate, setStartDate] = useState(tomorrow), [city, setCity] = useState(""), [origin, setOrigin] = useState(''), [arrival, setArrival] = useState(''), [departure, setDeparture] = useState(''), [travelMode, setTravelMode] = useState<'transit' | 'drive'>('transit');
   const effectiveDate = startDate || tomorrow();
-  const [selected, setSelected] = useState(0), [dragging, setDragging] = useState(false);
+  const [selected, setSelected] = useState(0), [dragging, setDragging] = useState(false), [attachGuide, setAttachGuide] = useState(true);
   const upload = useRef<HTMLInputElement>(null);
   const extractionController = useRef<AbortController | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -88,7 +88,9 @@ export function HomeForm() {
   async function confirm() {
     setBusy(true); setError('');
     try {
-      const { trip } = await api<{ trip: Trip }>('/api/trips', { title: draft?.guideMeta.title || `${city}行程核对`, startDate: startDate || tomorrow(), originCity: origin, destinationCity: city, arriveDay1: arrival || null, leaveLastDay: departure || null, mode: travelMode, guidePublishedAt: draft?.guideMeta.publishedAt || null, items });
+      // The report shows the guide as submitted unless the user opts out.
+      const guide = attachGuide && (text.trim() || files.length) ? { text: text.trim(), images: await prepareDisplayImages(files) } : null;
+      const { trip } = await api<{ trip: Trip }>('/api/trips', { title: draft?.guideMeta.title || `${city}行程核对`, startDate: startDate || tomorrow(), originCity: origin, destinationCity: city, arriveDay1: arrival || null, leaveLastDay: departure || null, mode: travelMode, guidePublishedAt: draft?.guideMeta.publishedAt || null, items, guide });
       try { await api(`/api/trips/${trip.id}/runs`, {}); }
       catch (error) { try { sessionStorage.setItem(`tripproof:start-error:${trip.id}`, (error as Error).message); } catch { /* The saved workspace still offers a retry. */ } }
       router.push(`/trips/${trip.id}`);
@@ -127,7 +129,7 @@ export function HomeForm() {
       </div>
     </div>
     {draft.recommendations.length > 0 && <details className="card recommendations"><summary>{draft.recommendations.length} 条住宿、美食或贴士没有排进行程</summary>{draft.recommendations.map((r, i) => <p key={i}><strong>{r.name}</strong> {r.note}</p>)}</details>}
-    <div className="review-bar"><span><ShieldCheck size={16}/>{effectiveDate} 出发 · {days.length} 天 · {items.length} 项 · 原图不进入报告</span><Button onClick={confirm} disabled={busy || !items.length || !city.trim()}>{busy ? <LoaderCircle size={17} className="spin"/> : <Check size={17}/>}确认行程，开始核对<ArrowRight size={16}/></Button></div>
+    <div className="review-bar"><span><ShieldCheck size={16}/>{effectiveDate} 出发 · {days.length} 天 · {items.length} 项</span><label className="attach-guide"><input type="checkbox" checked={attachGuide} onChange={e => setAttachGuide(e.target.checked)}/>报告附上原攻略{files.length ? '图文' : '文字'}<small>分享链接也能看到</small></label><Button onClick={confirm} disabled={busy || !items.length || !city.trim()}>{busy ? <LoaderCircle size={17} className="spin"/> : <Check size={17}/>}确认行程，开始核对<ArrowRight size={16}/></Button></div>
   </section>;
   return <div className="card input-card" id="input">
     <div className="input-tabs" role="tablist" aria-label="攻略输入方式"><button role="tab" disabled={busy} aria-selected={mode === 'text'} className={mode === 'text' ? 'active' : ''} onClick={() => setMode('text')}><FileText size={16}/>粘贴攻略</button><button role="tab" disabled={busy} aria-selected={mode === 'image'} className={mode === 'image' ? 'active' : ''} onClick={() => setMode('image')}><ImagePlus size={16}/>上传截图</button></div>

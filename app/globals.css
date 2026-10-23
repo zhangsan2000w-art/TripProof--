@@ -165,6 +165,33 @@ button.legend:hover { border-color: var(--line-2); background: var(--surface-2);
 
 /* ─── Notices, to-dos, chips ─────────────────────────────────────── */
 .notices-card, .todo { margin-top: 16px; padding: 20px 24px; }
+/* The guide as submitted */
+.guide-card { margin-top: 16px; padding: 18px 24px 20px; }
+.guide-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.guide-head h2 { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 700; }
+.guide-head span { color: var(--muted); font-size: 12px; }
+.guide-thumbs { display: flex; gap: 10px; margin-top: 12px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.guide-thumbs button { position: relative; flex: 0 0 auto; width: 92px; height: 122px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: var(--surface-2); cursor: zoom-in; transition: border-color .15s, transform .15s; }
+.guide-thumbs button:hover { border-color: var(--brand); transform: translateY(-1px); }
+.guide-thumbs img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.guide-thumbs span { position: absolute; left: 6px; bottom: 6px; min-width: 20px; padding: 1px 6px; border-radius: 999px; background: rgb(20 32 40 / 72%); color: #fff; font-size: 11px; text-align: center; }
+.guide-text { margin-top: 12px; padding: 12px 14px; border-radius: 10px; background: var(--surface-2); }
+.guide-text p { white-space: pre-wrap; color: var(--ink-2); font-size: 13.5px; line-height: 1.75; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.guide-text.open p { display: block; -webkit-line-clamp: unset; }
+.guide-text .text-link { margin-top: 6px; font-size: 13px; }
+.guide-viewer { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: rgb(14 22 28 / 92%); }
+.guide-viewer-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; color: #e6edf0; font-size: 13px; }
+.guide-viewer-bar > div { display: flex; align-items: center; gap: 6px; }
+.guide-viewer-bar button, .guide-viewer-bar a { display: inline-flex; align-items: center; gap: 5px; height: 34px; padding: 0 10px; border-radius: 8px; color: #fff; background: rgb(255 255 255 / 10%); font-size: 13px; }
+.guide-viewer-bar button:hover:not(:disabled), .guide-viewer-bar a:hover { background: rgb(255 255 255 / 20%); }
+.guide-viewer-bar button:disabled { opacity: .35; }
+.guide-viewer-body { flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 8px 16px 24px; }
+.guide-viewer-body img { max-width: min(100%, 720px); height: auto; border-radius: 8px; background: #fff; }
+.stop-source { padding: 10px 12px; border-left: 3px solid var(--line-2); border-radius: 4px; background: var(--surface-2); }
+.stop-source-label { color: var(--muted); font-size: 12px; }
+.stop-source p { margin-top: 3px; color: var(--ink-2); font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
+.stop-source .text-link { margin-top: 4px; font-size: 12.5px; }
+.evidence-panel .stop-source { margin-top: 12px; }
 .notices-card { border-color: var(--red-line); background: linear-gradient(180deg, #fff8f6, var(--surface) 60%); }
 .notices-card h2, .todo h2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 16px; font-weight: 700; }
 .notices-card h2 { color: var(--red-ink); }
@@ -176,9 +203,7 @@ button.legend:hover { border-color: var(--line-2); background: var(--surface-2);
 .notice { padding: 11px 14px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
 .notice-closure, .notice-suspension { border-left: 3px solid var(--red); } .notice-warning, .notice-response { border-left: 3px solid #d39a3e; }
 .notice-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
-.notice-top strong { font-size: 14px; }
-.notice-flag { margin-left: 8px; padding: 1px 7px; border-radius: 999px; background: var(--slate-soft); color: var(--slate-ink); font-size: 11px; font-style: normal; font-weight: 500; white-space: nowrap; }
-.notice.is-reported { border-style: dashed; } .notice-top span { flex-shrink: 0; color: var(--muted); font-size: 12px; }
+.notice-top strong { font-size: 14px; } .notice-top span { flex-shrink: 0; color: var(--muted); font-size: 12px; }
 .notice q { display: block; margin-top: 5px; color: var(--ink-2); font-size: 13px; line-height: 1.7; }
 .notice a { display: inline-flex; align-items: center; gap: 6px; margin-top: 7px; color: var(--brand); font-size: 12px; }
 .notice a:hover { text-decoration: underline; }
@@ -500,6 +525,9 @@ details[open] > summary > .chev { transform: rotate(180deg); }
 .recommendations p { margin-top: 6px; color: var(--muted); font-size: 12.5px; } .recommendations strong { color: var(--ink); }
 .review-bar { position: sticky; bottom: 14px; z-index: 5; display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-top: 16px; padding: 12px 14px 12px 18px; border-radius: 14px; background: var(--ink); color: #d6e0e5; font-size: 13px; box-shadow: 0 16px 40px -18px rgb(20 32 40 / 60%); }
 .review-bar > span { display: inline-flex; align-items: center; gap: 8px; }
+.attach-guide { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; color: #fff; cursor: pointer; }
+.attach-guide input { width: 15px; height: 15px; accent-color: #7fd1b0; }
+.attach-guide small { color: #9fb0b8; font-size: 12px; }
 .review-bar .button { background: #fff; color: var(--ink); } .review-bar .button:hover:not(:disabled) { background: #e9f2ee; }
 
 /* ─── Responsive ─────────────────────────────────────────────────── */

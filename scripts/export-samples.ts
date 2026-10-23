@@ -6,4 +6,4 @@ const path = resolve(process.argv.find(arg => arg.startsWith('--out='))?.slice(6
 const bundle = exportFeaturedSamples();
 mkdirSync(dirname(path), { recursive: true });
 writeFileSync(path, `${JSON.stringify(bundle)}\n`);
-console.log(`已导出 ${bundle.reports.length} 份精选真实报告：${path}；保留原核对时间，不含账户、原图和其他行程。`);
+console.log(`已导出 ${bundle.reports.length} 份精选真实报告：${path}；保留原核对时间和原攻略展示图文，不含账户、上传的原始文件和其他行程。`);

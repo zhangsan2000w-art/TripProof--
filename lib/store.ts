@@ -2,7 +2,7 @@ import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { and, desc, eq, gt, asc } from 'drizzle-orm';
 import { database } from '@/db';
 import * as s from '@/db/schema';
-import type { Trip, TripInput, Run, RunKind, RunResult, EventType, TripState } from './domain';
+import type { Trip, TripInput, Run, RunKind, RunResult, EventType, TripState, Guide, GuideSummary } from './domain';
 import { emptyResult } from './domain';
 import { now, today } from './dates';
 import { AppError } from './errors';
@@ -10,14 +10,43 @@ import { AppError } from './errors';
 export const id = () => randomUUID();
 export const token = () => randomBytes(24).toString('base64url');
 export const ownerHash = (session: string) => createHash('sha256').update(session).digest('hex');
-export function createTrip(input: TripInput, owner: string): Trip {
+export function createTrip(input: TripInput, owner: string, guide: Guide | null = null): Trip {
   const trip: Trip = { ...input, id: id(), shareId: token(), createdAt: now(), updatedAt: now(), revision: 1 };
   const { db } = database();
   db.transaction(tx => {
     tx.insert(s.trips).values({ id: trip.id, shareId: trip.shareId, owner, body: trip, updatedAt: trip.updatedAt }).run();
     for (const item of trip.items) tx.insert(s.items).values({ id: `${trip.id}:${item.id}`, tripId: trip.id, payload: item }).run();
+    if (guide) saveGuide(trip.id, guide);
   });
   return trip;
+}
+
+/** Keep the submitted guide beside the trip; images are stored as bytes, served one at a time. */
+export function saveGuide(tripId: string, guide: Guide) {
+  const { sqlite } = database();
+  sqlite.prepare('INSERT INTO guides (trip_id, text) VALUES (?, ?) ON CONFLICT(trip_id) DO UPDATE SET text = excluded.text').run(tripId, guide.text);
+  sqlite.prepare('DELETE FROM guide_images WHERE trip_id = ?').run(tripId);
+  const insert = sqlite.prepare('INSERT INTO guide_images (trip_id, idx, mime, data) VALUES (?, ?, ?, ?)');
+  for (const image of guide.images) {
+    const [, mime, data] = image.data.match(/^data:(image\/[a-z]+);base64,(.*)$/)!;
+    insert.run(tripId, image.sourceIndex, mime, Buffer.from(data, 'base64'));
+  }
+}
+export function guideSummary(tripId: string): GuideSummary | null {
+  const { sqlite } = database();
+  const row = sqlite.prepare('SELECT text FROM guides WHERE trip_id = ?').get(tripId) as { text: string } | undefined;
+  if (!row) return null;
+  const images = (sqlite.prepare('SELECT idx FROM guide_images WHERE trip_id = ? ORDER BY idx').all(tripId) as { idx: number }[]).map(r => r.idx);
+  return { text: row.text, images };
+}
+export function guideImage(tripId: string, index: number) {
+  const row = database().sqlite.prepare('SELECT mime, data FROM guide_images WHERE trip_id = ? AND idx = ?').get(tripId, index) as { mime: string; data: Buffer } | undefined;
+  return row ?? null;
+}
+export function exportGuide(tripId: string): Guide | null {
+  const summary = guideSummary(tripId);
+  if (!summary) return null;
+  return { text: summary.text, images: summary.images.map(n => { const image = guideImage(tripId, n)!; return { sourceIndex: n, data: `data:${image.mime};base64,${image.data.toString('base64')}` }; }) };
 }
 export function getTrip(tripId: string, owner?: string) {
   const row = database().db.select().from(s.trips).where(eq(s.trips.id, tripId)).get();
