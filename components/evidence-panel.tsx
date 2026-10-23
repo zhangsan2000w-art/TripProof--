@@ -5,6 +5,7 @@ import type { Dossier, Evidence, Judgment, Item } from '@/lib/domain';
 import { localTime, today } from '@/lib/dates';
 import { basisLabels, itemInsight, tierLabels, type ItemInsight, type RuleHighlight } from '@/lib/presentation';
 import { api } from '@/lib/client';
+import { missingTimeNote } from '@/lib/itinerary';
 import { Status } from './status';
 
 export { tierLabels };
@@ -78,7 +79,7 @@ export function EvidenceAudit({ item, judgments, dossiers, tripId, shareId, labe
 export function EvidencePanel({ item, judgments, dossiers, tripId, shareId, onAlternative, onPlanTime, busy }: { item: Item; judgments: Judgment[]; dossiers: Dossier[]; tripId?: string; shareId?: string; onAlternative?: () => void; onPlanTime?: () => void; busy?: boolean }) {
   const insight = itemInsight(item, judgments, dossiers, judgments[0]?.date || today());
   return <div className="evidence-panel">
-    <div className="panel-heading"><span className="kicker">地点详情</span><h2>{item.placeName}</h2><p>{item.start ? `计划 ${item.start}${item.end ? `—${item.end}` : ' 到达'}` : '攻略没写到达时间'}{item.activity ? ` · ${item.activity}` : ''}</p></div>
+    <div className="panel-heading"><span className="kicker">地点详情</span><h2>{item.placeName}</h2><p>{item.start ? `计划 ${item.start}${item.end ? `—${item.end}` : ' 到达'}` : missingTimeNote(item)}{item.activity ? ` · ${item.activity}` : ''}</p></div>
     {!judgments.length && <div className="empty-evidence"><FileSearch size={26}/><h3>{busy ? '正在为这一站查找证据' : '还没有检查结果'}</h3><p>规则和来源通过核验后，结论会显示在这里。</p></div>}
     {!!judgments.length && <>
       <p className={`stop-takeaway tone-${insight.state}`}>{insight.message}</p>

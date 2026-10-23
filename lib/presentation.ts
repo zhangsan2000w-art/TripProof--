@@ -1,6 +1,7 @@
 import type { Alternative, Dossier, Evidence, Fact, Item, Judgment, Suggestion, TripInput } from './domain';
 import { dateForDay, inSeason, weekday, weekdayLabel } from './dates';
 import { dayAdvisories, scopeName, type Advisory } from './risk';
+import { unresolvedTarget } from './itinerary';
 
 export type PlanState = 'adjust' | 'fits' | 'needs_time' | 'verify' | 'pending';
 export const planLabels: Record<PlanState, string> = { adjust: '需调整', fits: '可前往', needs_time: '待补时间', verify: '待核实', pending: '尚未核验' };
@@ -50,9 +51,11 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   const facts = dossiers.flatMap(d => d.facts);
   const venueFacts = dossiers.filter(d => js.some(j => j.venueId === d.venue.id)).flatMap(d => d.facts).filter(usable);
   const evidence = dossiers.flatMap(d => d.evidence);
-  const place = item.kind !== 'transport' && item.kind !== 'hotel';
+  const unresolved = unresolvedTarget(item);
+  const place = !unresolved && item.kind !== 'transport' && item.kind !== 'hotel';
   const rules: RuleHighlight[] = [];
   const usedFacts: Fact[] = [];
+  if (unresolved) rules.push({ label: '安排', value: item.kind === 'transport' ? '路线待选定' : '商家待选定', verified: false, note: unresolved.message });
 
   const safety = js.find(j => j.type === 'safety');
   const safetyFacts = safety ? facts.filter(f => safety.factIds.includes(f.id)) : [];
@@ -137,7 +140,7 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   if (serviceFact?.kind === 'service_hours') {
     rules.push({ label: '运营时间', value: `${serviceFact.payload.first || '首班待核实'}—${serviceFact.payload.last}${serviceFact.payload.lastDayOffset ? '（次日）' : ''}`, verified: service?.verdict !== 'unknown', basis: service?.verdict !== 'unknown' ? basisOf([serviceFact]) : 'reference', note: service?.reasonCode === 'SOURCES_DISAGREE' ? '来源说法不一致' : undefined });
     usedFacts.push(serviceFact);
-  } else if (item.kind === 'transport') rules.push({ label: '运营时间', value: '未查到', verified: false, tone: 'muted', note: '以承运方、12306 或地图实时信息为准' });
+  } else if (item.kind === 'transport' && !unresolved) rules.push({ label: '运营时间', value: '未查到', verified: false, tone: 'muted', note: '以承运方、12306 或地图实时信息为准' });
 
   const updates = js.filter(j => j.type === 'guide_claim' && j.verdict === 'conflict');
   const staleClaims = updates.length ? [...new Set(item.claimedRules.filter(c => c.kind === 'hours').flatMap(c => {
@@ -159,6 +162,7 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   const closedText: Record<string, string> = { CLOSED_WEEKLY: '是每周闭馆日', CLOSED_AFTER_HOLIDAY: '是节假日后的顺延闭馆日', TEMP_CLOSED: '有临时闭馆公告' };
   const first = conflicts[0];
   const message = (first && first.type === 'open_on_date' && closedText[first.reasonCode] ? `${md(date.slice(5))}（${weekdayLabel(date)}）${closedText[first.reasonCode]}，这天去会扑空。` : first?.explanation) ?? (alert ? `${alert.explanation}${usual}` : null) ?? (
+    unresolved ? unresolved.message :
     state === 'fits' ? (allDay ? '全天开放，当天任何时间都可以去。' : '当天开放，你填的时段在开放时间内。') :
     state === 'needs_time' && serviceFact?.kind === 'service_hours' && !hoursVerified ? `查到${serviceFact.payload.first ? `首班 ${serviceFact.payload.first}、` : ''}末班 ${serviceFact.payload.last}${serviceFact.payload.lastDayOffset ? '（次日）' : ''}；补上乘车时间就能核对赶不赶得上。` :
     state === 'needs_time' ? (openCheck?.verdict === 'confirmed' ? `当天开放${hours ? `，${span(...hours.split('—') as [string, string])}` : ''}${entry ? `，${entry} 前入场` : ''}。补上到达时间就能核对来不来得及。` : `营业时间已查到${hours ? `（${hours}）` : ''}，但当天是否开放还没确认。`) :

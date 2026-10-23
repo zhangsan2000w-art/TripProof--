@@ -16,6 +16,7 @@ import { redact, structured } from './llm';
 import { mapLimit, Semaphore } from './concurrency';
 import { searchName, selectVenueSources } from './source-selection';
 import { searchAllowance } from './budget';
+import { unresolvedTarget } from './itinerary';
 
 const links = new Semaphore(8);
 const models = new Semaphore(3);
@@ -27,7 +28,9 @@ function candidateDomain(pages: Evidence[], name: string) {
 function venueId(key: string) { return createHash('sha256').update(key).digest('hex').slice(0, 24); }
 export async function investigateVenue(runId: string, item: Item, city: string, dates: string[], cap = 5): Promise<Dossier> {
   const key = `${city}:${item.placeName}`, vid = venueId(key);
-  const cacheKey = `dossier:v6:${key}:${[...dates].sort().join(',')}`;
+  const unresolved = unresolvedTarget(item);
+  if (unresolved) return { venue: { id: vid, key, canonicalName: item.placeName, city, officialDomain: null, officialEvidenceId: null, investigationDates: dates }, facts: [], evidence: [], calls: [], searchedScope: [], limitations: [unresolved.message], createdAt: now() };
+  const cacheKey = `dossier:v7:${key}:${[...dates].sort().join(',')}`;
   const cached = cacheGet<Dossier>(cacheKey);
   if (cached) {
     const d = structuredClone(cached), callMap = new Map<string, string>();
@@ -159,8 +162,9 @@ async function mainInvestigation(run: Run, trip: Trip): Promise<RunResult> {
   const inWindow = (date: string) => daysUntil(date) >= 0 && daysUntil(date) <= 7;
   const reserved = [...cityDates.values()].filter(dates => [...dates].some(inWindow)).length * 2
     + new Set(trip.items.filter(i => (i.kind === 'scenic' || /户外|登山|游船|步行|日落/.test(i.activity)) && inWindow(dateForDay(trip.startDate, i.day))).map(i => `${i.city || trip.destinationCity}:${i.day}`)).size;
-  const allowance = searchAllowance(tasks.map(t => t[0]), run.limit - reserved);
-  const caps = new Map(tasks.map((items, n) => [items, allowance[n]]));
+  const searchable = tasks.filter(t => !unresolvedTarget(t[0]));
+  const allowance = searchAllowance(searchable.map(t => t[0]), run.limit - reserved);
+  const caps = new Map(searchable.map((items, n) => [items, allowance[n]]));
   await mapLimit(tasks, 3, async items => {
     const item = items[0], city = item.city || trip.destinationCity;
     const dates = [...new Set(items.map(i => dateForDay(trip.startDate, i.day)))];

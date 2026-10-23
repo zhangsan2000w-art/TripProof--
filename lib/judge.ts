@@ -4,6 +4,7 @@ import { registrableDomain } from './evidence';
 import { createHash } from 'node:crypto';
 import { factSupported } from './facts';
 import { judgeSafety, riskKey } from './risk';
+import { unresolvedTarget } from './itinerary';
 function seasonLength(from: string, to: string) {
   const start = Date.parse(`2000-${from}`), end = Date.parse(`2000-${to}`);
   return ((end - start) / 86400000 + 366) % 366 + 1;
@@ -112,7 +113,9 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     if (r.error) { make(type, 'unknown', r.error, reasonText[r.error], r.picked, r.overruled); return null; }
     return r;
   };
-  const visitable = ['museum', 'scenic', 'show', 'restaurant', 'other'].includes(item.kind);
+  const unresolved = unresolvedTarget(item);
+  if (unresolved) make(item.kind === 'transport' ? 'service_hours' : 'hours_fit', 'unknown', unresolved.code, unresolved.message);
+  const visitable = !unresolved && ['museum', 'scenic', 'show', 'restaurant', 'other'].includes(item.kind);
   if (visitable) {
     const specific = facts.filter(f => (f.kind === 'temp_open' || (f.kind === 'temp_closure' && f.payload.scope === 'whole')) && covers(f, date));
     const openEnded = facts.filter(f=>f.kind==='temp_closure'&&f.payload.to===null&&f.payload.from<=date&&f.payload.scope==='whole');
@@ -222,7 +225,7 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     }
     make('availability', 'unknown', 'REALTIME', `实时门票和预约库存无法通过网页搜索确认，请到${dossier?.venue.officialDomain ? `场馆官方渠道（${dossier.venue.officialDomain}）` : '场馆官方 App 或小程序'}核实。`);
   }
-  if (item.kind === 'transport') {
+  if (item.kind === 'transport' && !unresolved) {
     const r = resolve(facts.filter(f => f.kind === 'service_hours'), 'service_hours');
     if (r) {
       const f = r.picked[0];
