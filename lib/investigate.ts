@@ -30,7 +30,7 @@ export async function investigateVenue(runId: string, item: Item, city: string, 
   const key = `${city}:${item.placeName}`, vid = venueId(key);
   const unresolved = unresolvedTarget(item);
   if (unresolved) return { venue: { id: vid, key, canonicalName: item.placeName, city, officialDomain: null, officialEvidenceId: null, investigationDates: dates }, facts: [], evidence: [], calls: [], searchedScope: [], limitations: [unresolved.message], createdAt: now() };
-  const cacheKey = `dossier:v7:${key}:${[...dates].sort().join(',')}`;
+  const cacheKey = `dossier:v8:${key}:${[...dates].sort().join(',')}`;
   const cached = cacheGet<Dossier>(cacheKey);
   if (cached) {
     const d = structuredClone(cached), callMap = new Map<string, string>();

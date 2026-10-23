@@ -7,6 +7,7 @@ import { load } from 'cheerio';
 import { cacheGet, cacheSet } from './store';
 import { now } from './dates';
 import type { Evidence, LinkStatus } from './domain';
+import { decodePageBody, maxPageBytes } from './page-body';
 
 const matchesDomain = (domain: string, parent: string) => domain === parent || domain.endsWith(`.${parent}`);
 // Central state media, national weather services, and one or two key news sites for every
@@ -102,11 +103,13 @@ function requestPage(url: URL, address: { address: string; family: number }, tim
     }, response => {
       const chunks: Buffer[] = []; let size = 0;
       const contentType = String(response.headers['content-type'] ?? '');
-      response.on('data', (chunk: Buffer) => { size += chunk.length; if (size <= 2_000_000) chunks.push(chunk); else req.destroy(new Error('PAGE_TOO_LARGE')); });
+      response.on('data', (chunk: Buffer) => { size += chunk.length; if (size <= maxPageBytes) chunks.push(chunk); else req.destroy(new Error('PAGE_TOO_LARGE')); });
       response.on('end', () => {
-        const raw = Buffer.concat(chunks);
-        const encoding = /charset\s*=\s*(gbk|gb2312|gb18030)/i.test(contentType) ? 'gb18030' : 'utf-8';
-        resolve({ status: response.statusCode ?? 0, location: response.headers.location, body: /(?:html|text|xml)/i.test(contentType) ? new TextDecoder(encoding).decode(raw) : '', contentType });
+        try {
+          if (size > maxPageBytes) throw new Error('PAGE_TOO_LARGE');
+          const body = decodePageBody(Buffer.concat(chunks), contentType, String(response.headers['content-encoding'] ?? ''));
+          resolve({ status: response.statusCode ?? 0, location: response.headers.location, body, contentType });
+        } catch (error) { reject(error); }
       });
       response.on('error', reject);
     });
@@ -115,9 +118,9 @@ function requestPage(url: URL, address: { address: string; family: number }, tim
   });
 }
 export type PageCheck = { linkStatus: LinkStatus; checkedAt: string; finalUrl: string; text: string; sha256: string | null };
-export function cachedLinkCheck(url:string) { return cacheGet<PageCheck>(`page:${createHash('sha256').update(url).digest('hex')}`); }
+export function cachedLinkCheck(url:string) { return cacheGet<PageCheck>(`page:v2:${createHash('sha256').update(url).digest('hex')}`); }
 export async function checkLink(url: string, force = false): Promise<PageCheck> {
-  const key = `page:${createHash('sha256').update(url).digest('hex')}`;
+  const key = `page:v2:${createHash('sha256').update(url).digest('hex')}`;
   const cached = !force && cacheGet<PageCheck>(key);
   if (cached) return cached;
   const result: PageCheck = { linkStatus: 'broken', checkedAt: now(), finalUrl: url, text: '', sha256: null };
