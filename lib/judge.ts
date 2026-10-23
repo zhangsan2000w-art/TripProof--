@@ -148,7 +148,7 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
         const closed = ['weekly_closure', 'temp_closure'].includes(r.picked[0].kind);
         const byHours = !closed && !specific.length && r.picked.every(f => implied.includes(f));
         make('open_on_date', closed ? 'conflict' : 'confirmed', closed ? r.picked[0].kind === 'temp_closure' ? 'TEMP_CLOSED' : shifted.length ? 'CLOSED_AFTER_HOLIDAY' : 'CLOSED_WEEKLY' : specific.length ? 'OPEN_BY_NOTICE' : byHours ? 'OPEN_BY_HOURS' : 'OPEN_BY_RULE',
-          closed ? `该场馆的${specific.length ? '临时闭馆公告' : shifted.length ? '节假日后顺延闭馆规则' : '每周闭馆规则'}覆盖 ${date}（${weekdayLabel(date)}），这天去会扑空。` : byHours ? `${date}（${weekdayLabel(date)}）适用已核实的开放时间，来源未提到这天闭园或闭馆。` : `${date}（${weekdayLabel(date)}）符合已核实的${specific.length ? '临时开放公告' : '常规开放规则'}。`,
+          closed ? `${Number(date.slice(5, 7))}月${Number(date.slice(8))}日（${weekdayLabel(date)}）${specific.length ? '有临时闭馆公告' : shifted.length ? '是节假日后的顺延闭馆日' : '是每周闭馆日'}，这天去会扑空。` : byHours ? `${date}（${weekdayLabel(date)}）适用已核实的开放时间，来源未提到这天闭园或闭馆。` : `${date}（${weekdayLabel(date)}）符合已核实的${specific.length ? '临时开放公告' : '常规开放规则'}。`,
           r.picked, r.overruled, [...(!specific.length ? [`未发现公告不等于不存在临时变更；已检索范围见调查日志。`] : []), ...partial.map(f => `局部区域关闭：${f.kind === 'temp_closure' ? f.payload.note : ''}，请核对是否涉及计划活动。`)]);
       }
     }

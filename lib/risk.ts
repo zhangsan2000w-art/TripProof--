@@ -68,7 +68,7 @@ export const advisoryFresh = (a: Advisory, base = today()) => daysUntil(a.payloa
 const usable = (f: Fact) => f.quoteVerified && f.venueMatch === 'exact' && f.linkStatus !== 'broken';
 const registrable = (domain: string) => domain.toLowerCase().split('.').slice(/(?:com|org|gov|net|edu)\.cn$/.test(domain) ? -3 : -2).join('.');
 /** Official and authoritative notices count alone; anything else needs a second independent site. */
-function corroborated(a: Advisory, peers: Advisory[]) {
+export function corroborated(a: Advisory, peers: Advisory[]) {
   if (a.tier <= 2) return true;
   const same = peers.filter(p => p.payload.type === a.payload.type && p.payload.hazard === a.payload.hazard);
   return new Set(same.map(p => registrable(p.domain))).size >= 2;
@@ -125,15 +125,27 @@ export function assessSafety(item: Item, date: string, city: string, risk: Dossi
   // 2. Warnings and emergency responses.
   const warnings = covering.filter(a => advisorySeverity(a));
   const strongWarnings = warnings.filter(a => corroborated(a, warnings));
-  const top = strongWarnings.sort((a, b) => severityRank[advisorySeverity(b)!] - severityRank[advisorySeverity(a)!] || a.tier - b.tier)[0];
+  const strongest = (list: Advisory[]): Advisory | undefined => [...list].sort((a, b) => severityRank[advisorySeverity(b)!] - severityRank[advisorySeverity(a)!] || a.tier - b.tier)[0];
+  const warningName = (p: Advisory['payload']) => p.type === 'response' ? `${p.hazard === '其他' ? '' : `防${p.hazard}`}${p.level ?? ''}应急响应` : `${p.hazard}${p.level ? p.level.replace(/(?:预警|信号)$/, '') : ''}预警`;
+  const top = strongest(strongWarnings);
   if (top) {
-    const severity = advisorySeverity(top)!, p = top.payload;
-    const name = p.type === 'response' ? `${p.hazard === '其他' ? '' : `防${p.hazard}`}${p.level ?? ''}应急响应` : `${p.hazard}${p.level ? p.level.replace(/(?:预警|信号)$/, '') : ''}预警`;
+    const severity = advisorySeverity(top)!, p = top.payload, name = warningName(p);
     const basis = strongWarnings.filter(a => a.payload.hazard === p.hazard);
     const offRoute = exposure !== 'transport' && exposedTo(p.hazard, exposure);
     if (offRoute && severity !== 'watch') return { verdict: 'conflict', code: 'HAZARD_EXPOSED', explanation: `${stem(p.area)}${name}期间，${label}默认不安全，不建议前往。`, basis, notes: [place?.exposureReason ? `点位类型：${place.exposureReason}` : '点位类型按地点名称判断。', '开放时间只说明平时几点开门，不能说明预警期间可以去。'] };
     if (exposure === 'transport' && (severity === 'severe' || (severity === 'high' && transportHazards.has(p.hazard)))) return { verdict: 'unknown', code: 'SERVICE_ALERT', explanation: `${stem(p.area)}${name}期间可能停运，以当天停运公告为准。`, basis, notes: ['公交、轨道、轮渡和打车都可能停运或受限；时刻表不能说明能正常出行。'] };
     if (offRoute || (exposure === 'outdoor' && severity !== 'watch') || severity === 'severe') return { verdict: 'unknown', code: 'HAZARD_ALERT', explanation: `${stem(p.area)}${name}期间可能临时闭园或限流，出发前查景区和当地官方公告。`, basis, notes: [] };
+  }
+  // A warning that only one secondary site repeats never rules a stop out,
+  // but the stops it would affect are not marked as fine either.
+  const reported = !top && strongest(warnings);
+  if (reported) {
+    const severity = advisorySeverity(reported)!, p = reported.payload, name = warningName(p);
+    const affected = exposure === 'transport' ? severity === 'severe' || (severity === 'high' && transportHazards.has(p.hazard))
+      : exposedTo(p.hazard, exposure) || severity === 'severe' || (exposure === 'outdoor' && severity === 'high');
+    if (affected) return { verdict: 'unknown', code: 'HAZARD_REPORTED',
+      explanation: `有网页转述${stem(p.area)}${name}，未经官方证实；${exposure === 'transport' ? '可能停运' : `${label}可能临时关闭`}，出发前查官方公告。`,
+      basis: [reported], notes: ['只有转载来源，没有据此判定不能去；也不按平时的开放时间标为可前往。'] };
   }
 
   // 3. No warning yet, but the forecast for that day is severe.
@@ -157,12 +169,17 @@ export function judgeSafety(item: Item, trip: TripInput, risk: Dossier | undefin
   };
 }
 
-/** Notices in force on one trip day, strongest first, for the day banner. */
-export function dayAdvisories(dossiers: Dossier[], date: string) {
+/**
+ * Notices in force on one trip day for the day banner: confirmed ones first, strongest first.
+ * Notices only one secondary site repeats are kept and marked, so the day never reads as "no warning".
+ */
+export function dayAdvisories(dossiers: Dossier[], date: string): (Advisory & { confirmed: boolean })[] {
   const notices = dossiers.filter(d => d.venue.key.startsWith('risk:')).flatMap(d => d.facts).filter(isAdvisory).filter(usable)
     .filter(a => advisoryFresh(a) && advisoryActive(a, date) && a.payload.type !== 'reopen');
   const weight = (a: Advisory) => a.payload.type === 'closure' || a.payload.type === 'suspension' ? 4 : severityRank[advisorySeverity(a) ?? 'watch'];
   const seen = new Set<string>();
-  return notices.filter(a => corroborated(a, notices)).sort((a, b) => weight(b) - weight(a) || a.tier - b.tier)
+  return notices.map(a => ({ ...a, confirmed: corroborated(a, notices) }))
+    .filter(a => a.confirmed || advisorySeverity(a) || a.payload.type === 'closure' || a.payload.type === 'suspension')
+    .sort((a, b) => Number(b.confirmed) - Number(a.confirmed) || weight(b) - weight(a) || a.tier - b.tier)
     .filter(a => { const key = `${a.payload.type}:${a.payload.hazard}:${a.payload.level}:${a.payload.scope ?? a.payload.area}`; if (seen.has(key)) return false; seen.add(key); return true; });
 }

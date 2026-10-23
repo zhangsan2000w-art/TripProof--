@@ -43,7 +43,13 @@ export function ReportView({ trip, initialResult, checkedAt, updating = false }:
   const cards: Judgment[] = [];
   for (const v of ['conflict', 'confirmed', 'unknown'] as const) { const j = judgments.find(j => j.verdict === v && j.type !== 'arrival_fit'); if (j) cards.push(j); }
   const { counts } = insights;
-  const notices = views.filter(v => v.weather.notices.length);
+  // Days in a row with the same notices share one block.
+  const notices: (typeof views)[] = [];
+  for (const v of views.filter(v => v.weather.notices.length)) {
+    const key = (x: (typeof views)[number]) => x.weather.notices.map(n => n.advisory.id).join();
+    const last = notices.at(-1), prev = last?.at(-1);
+    if (last && prev && prev.day + 1 === v.day && key(prev) === key(v)) last.push(v); else notices.push([v]);
+  }
 
   // The to-do list: closures grouped by day, then bookings and what is still open.
   const adjustGroups = new Map<string, { names: string[]; ids: string[]; day: number; text: string; safety: boolean }>();
@@ -65,7 +71,8 @@ export function ReportView({ trip, initialResult, checkedAt, updating = false }:
     ...views.filter(v => !v.weather.notices.length && v.weather.forecast?.reasonCode === 'WEATHER_RISK').slice(0, 1).map(v => ({ tone: 'warn' as const, icon: CloudRain, title: `${monthDay(v.date)} 天气`, text: v.weather.forecast!.explanation.replace(/^\d{4}-\d{2}-\d{2}\s*/, ''), href: `#day-${v.day}` })),
     ...insights.items.filter(({ insight }) => insight.state !== 'adjust' && insight.rules.some(r => r.label === '预约 / 购票' && r.value === '需提前预约')).map(({ item }) => {
       const j = judgments.find(j => j.itemId === item.id && j.type === 'reservation_rule');
-      return { tone: 'info' as const, icon: Ticket, title: `${item.placeName} 要提前预约`, text: j?.explanation.replace('此结论不表示已有名额或已完成预约。', '').replace(/^需提前预约[；，]?/, '') || '出发前在官方渠道预约。', href: `#stop-${item.id}` };
+      const detail = (j?.explanation ?? '').replace('此结论不表示已有名额或已完成预约。', '').replace(/^需提前预约[；，。]?/, '').trim();
+      return { tone: 'info' as const, icon: Ticket, title: `${item.placeName} 要提前预约`, text: /[\p{L}\p{N}]/u.test(detail) ? detail : '出发前在官方渠道预约。', href: `#stop-${item.id}` };
     }),
     ...(verifyItems.length ? [{ tone: 'muted' as const, icon: CircleHelp, title: `${verifyItems.length} 个地点没查到可靠规则`, text: `${verifyItems.slice(0, 5).map(i => i.item.placeName).join('、')}${verifyItems.length > 5 ? ` 等` : ''}，出发前向场馆确认。`, href: `#stop-${verifyItems[0].item.id}` }] : []),
     ...(counts.needs_time ? [{ tone: 'muted' as const, icon: Clock3, title: `${counts.needs_time} 个地点缺到达时间`, text: '营业规则已查到；在原行程工作台补上计划到达时间，就能核对是否赶在停止入场之前。' }] : []),
@@ -88,7 +95,8 @@ export function ReportView({ trip, initialResult, checkedAt, updating = false }:
 
       {notices.length > 0 && <section className="card notices-card" aria-label="预警与区域公告">
         <h2><Siren size={17}/>预警与区域公告<span>先看这一项：生效中的官方公告优先于营业时间</span></h2>
-        {notices.map(v => <div className="notices-day" key={v.day}><h3>{monthDay(v.date)} {weekdayLabel(v.date)}<span>{v.weather.blocked ? `${v.weather.blocked} 个地点不建议去` : ''}{v.weather.blocked && v.weather.alerted ? ' · ' : ''}{v.weather.alerted ? `${v.weather.alerted} 处待当天确认` : ''}</span></h3><NoticeList notices={v.weather.notices}/></div>)}
+        {notices.map(group => { const blocked = group.reduce((n, v) => n + v.weather.blocked, 0), alerted = group.reduce((n, v) => n + v.weather.alerted, 0);
+          return <div className="notices-day" key={group[0].day}><h3>{group.map(v => `${monthDay(v.date)} ${weekdayLabel(v.date)}`).join('、')}<span>{blocked ? `${blocked} 个地点不建议去` : ''}{blocked && alerted ? ' · ' : ''}{alerted ? `${alerted} 处待当天确认` : ''}</span></h3><NoticeList notices={group[0].weather.notices}/></div>; })}
       </section>}
 
       {todos.length > 0 && <section className="card todo" aria-label="出发前要处理的事">
