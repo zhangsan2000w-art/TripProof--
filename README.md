@@ -16,6 +16,8 @@ tags:
 
 空间类型请选择 **Docker**。容器监听 `0.0.0.0:7860`，同时运行网页与调查 worker；数据库保存在 `/mnt/workspace/tripproof/tripproof.db`。免费 CPU 的额度和休眠政策以平台创建页为准。
 
+当前建议使用电脑试用：2026-10-23 的窄屏检查发现，魔搭全屏运行页在 390px 视口仍把内层应用设为 1280px，导致内容被截断；直接应用链接也会转入该框架。本应用在本地 390px 的响应式布局已通过，但不能把它等同于魔搭手机端可用。该平台外层限制仍待解决。
+
 部署步骤：
 
 1. 登录魔搭，绑定已实名认证的阿里云账号，创建编程式创空间，SDK 选 Docker，资源选页面提供的免费 CPU 规格。
@@ -57,4 +59,4 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 免费的是托管资源，GPT 与元宝搜索仍可能计费。休眠后需等待平台唤醒；运行中被中断的调查会保留已完成证据，并提示重试。平台保留 `/mnt/workspace` 数据，但重命名或转移空间仍可能丢失，重要数据应单独备份。当前版本使用单实例、单 worker，不要开启多副本。
 
-官方说明：[Docker 创空间](https://www.modelscope.cn/docs/studios/docker) · [资源规格](https://www.modelscope.cn/docs/studios/resource-selections)。容器构建、持久卷权限、外网 API、SSE 和休眠唤醒仍需在实际空间中验收。
+官方说明：[Docker 创空间](https://www.modelscope.cn/docs/studios/docker) · [资源规格](https://www.modelscope.cn/docs/studios/resource-selections)。当前项目已在免费 2 核 / 8GB 资源验证容器构建、持久卷权限、GPT 和 SearchPro、SSE 及重部署后的数据保留；长时间闲置休眠后的唤醒行为尚未实测。
