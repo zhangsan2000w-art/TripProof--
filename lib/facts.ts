@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { structured } from './llm';
 import { id } from './store';
 import { normalizeQuote, quoteMatches, sourceTier, registrableDomain, venueSiteDomains, siteLabel } from './evidence';
-import { validDate } from './dates';
+import { daysUntil, validDate, weekday } from './dates';
 import { createHash } from 'node:crypto';
 
 function mentionsTime(value: string, text: string) {
@@ -33,6 +33,17 @@ function mentionsDate(date: string, text: string, evidence: Evidence) {
   const sourceYear = evidence.publishedAt?.slice(0,4) || evidence.retrievedAt.slice(0,4);
   if (String(year) !== sourceYear || /20\d{2}(?:年|[-/.])/.test(normalized)) return false;
   return new RegExp(`(?:^|[^0-9])0?${month}(?:月|[-/.])0?${day}(?:日|号|[^0-9]|$)`).test(normalized);
+}
+const weekdayChars = ['[日天]', '一', '二', '三', '四', '五', '六'];
+const dayWeekday = (date: string) => new RegExp(`(?:^|[^0-9])0?${Number(date.slice(8))}(?:日|号)\\s*\\(?\\s*(?:周|星期|礼拜)\\s*${weekdayChars[weekday(date)]}`);
+/**
+ * Forecast tables often give only the day and weekday, e.g. 24日(周六). Accept that when both
+ * match the date and the source was published in the ten days before it.
+ */
+export function mentionsDayAndWeekday(date: string, text: string, evidence: Pick<Evidence, 'publishedAt'>) {
+  if (!validDate(date) || !evidence.publishedAt) return false;
+  const ahead = daysUntil(date, evidence.publishedAt.slice(0, 10));
+  return ahead >= 0 && ahead <= 10 && dayWeekday(date).test(text.normalize('NFKC'));
 }
 /** The text around a verified quote, where a notice's dates, level and area are written. */
 function quoteContext(quote: string, evidence: Pick<Evidence, 'passage' | 'content'>, radius = 220) {
@@ -97,7 +108,7 @@ export function factSupported(fact: ExtractedFact, evidence: Evidence): boolean 
     if (!validDate(p.from) || (p.to && (!validDate(p.to) || p.from > p.to))) return false;
     if (!mentionsDate(p.from, quote, evidence) || (p.to && !mentionsDate(p.to, `${quote} ${evidence.passage}`, evidence))) return false;
   }
-  if (fact.kind === 'weather' && (!mentionsDate(fact.payload.date, quote, evidence) || !`${evidence.passage} ${evidence.content}`.includes(fact.payload.city.replace(/市$/, '')) || !bareText(fact.payload.summary) || !bareText(quote).includes(bareText(fact.payload.summary)) || (fact.payload.warning && !bareText(quote).includes(bareText(fact.payload.warning))))) return false;
+  if (fact.kind === 'weather' && (!(mentionsDate(fact.payload.date, quote, evidence) || mentionsDayAndWeekday(fact.payload.date, quote, evidence)) || !`${evidence.passage} ${evidence.content}`.includes(fact.payload.city.replace(/市$/, '')) || !bareText(fact.payload.summary) || !bareText(quote).includes(bareText(fact.payload.summary)) || (fact.payload.warning && !bareText(quote).includes(bareText(fact.payload.warning))))) return false;
   return true;
 }
 const weekdayNumbers: Record<string, number> = { 日: 0, 天: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
@@ -215,10 +226,11 @@ officialDomain 只在证据正文/站点身份能证明该域名由场馆所属�
 }
 export async function extractWeatherFacts(venueId:string,city:string,date:string,evidence:Evidence[]):Promise<Fact[]> {
   const tokens=[date,`${Number(date.slice(5,7))}月${Number(date.slice(8))}日`,`${Number(date.slice(5,7))}/${Number(date.slice(8))}`,date.slice(5)];
-  const usable=evidence.filter(e=>e.linkStatus!=='broken'&&tokens.some(t=>`${e.passage} ${e.content}`.includes(t)));
+  const whole=(e:Evidence)=>`${e.passage} ${e.content}`.normalize('NFKC');
+  const usable=evidence.filter(e=>e.linkStatus!=='broken'&&(tokens.some(t=>whole(e).includes(t))||mentionsDayAndWeekday(date,whole(e),e)));
   if(!usable.length)return [];
   const schema=z.object({facts:z.array(extractedFactSchema.options.find(s=>s.shape.kind.value==='weather')!).max(3)});
-  const output=await structured('fact',schema,'仅读取明确属于指定城市和日期的天气预报。必须逐字复制含预报日期及天气内容的连续短引文（最多80字符），summary 只抄引文中的天气现象和气温，warning 只抄引文中的预警或台风说法，不得用查询日期替换原文日期，不根据今天/明天猜日期，不输出其它城市或日期。validFrom/validTo均null，没有匹配预报返回空数组。',[{type:'input_text',text:JSON.stringify({city,date,evidence:usable.map(e=>{const whole=`${e.passage} ${e.content}`;const at=Math.min(...tokens.map(t=>whole.indexOf(t)).filter(n=>n>=0));return {id:e.id,text:whole.slice(Math.max(0,at-400),at+2200)};})})}],3000);
+  const output=await structured('fact',schema,'仅读取明确属于指定城市和日期的天气预报。原文只写日和星期（如“24日(周六)”）时，只有日和星期都与指定日期一致才算这一天。必须逐字复制含预报日期及天气内容的连续短引文（最多80字符），summary 只抄引文中的天气现象和气温，warning 只抄引文中的预警或台风说法，不得用查询日期替换原文日期，不根据今天/明天猜日期，不输出其它城市或日期。validFrom/validTo均null，没有匹配预报返回空数组。',[{type:'input_text',text:JSON.stringify({city,date,evidence:usable.map(e=>{const text=whole(e);const hits=[...tokens.map(t=>text.indexOf(t)),text.search(dayWeekday(date))].filter(n=>n>=0);const at=hits.length?Math.min(...hits):0;return {id:e.id,text:text.slice(Math.max(0,at-400),at+2200)};})})}],3000);
   return output.facts.filter(f=>f.kind==='weather'&&f.payload.date===date).flatMap(f=>{const e=usable.find(e=>e.id===f.evidenceId);return e&&factSupported(f,e)?[{...f,id:id(),venueId,quoteVerified:true,tier:e.tier,domain:new URL(e.finalUrl||e.url).hostname,publishedAt:e.publishedAt,retrievedAt:e.retrievedAt,linkStatus:e.linkStatus} as Fact]:[];});
 }
 const riskWords = /台风|暴雨|暴雪|大风|预警|应急响应|防汛|防台|关闭|闭园|闭馆|暂停开放|暂停营业|停航|停运|停驶|恢复开放|封闭/;

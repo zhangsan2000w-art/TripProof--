@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { database } from '@/db';
@@ -10,7 +10,7 @@ import { sampleManifestPath } from './sample-manifest';
 export { sampleManifestPath } from './sample-manifest';
 
 const reference = z.object({ case: z.string().min(1), shareId: z.string().min(1) });
-const manifestSchema = z.object({ reports: z.array(reference) });
+const manifestSchema = z.object({ bundleExportedAt: z.string().optional(), reports: z.array(reference) });
 const tripSchema = tripInputSchema.extend({
   id: z.string().min(1), shareId: z.string().min(1), revision: z.number().int().positive(),
   createdAt: z.iso.datetime(), updatedAt: z.iso.datetime(),
@@ -90,15 +90,22 @@ export function initializeSampleReports(path = 'data/sample-reports.json') {
     return count;
   }).immediate();
   const manifestPath = sampleManifestPath();
-  let selected: z.infer<typeof reference>[] = [];
-  if (existsSync(manifestPath)) selected = manifestSchema.parse(JSON.parse(readFileSync(manifestPath, 'utf8'))).reports;
+  let selected: z.infer<typeof reference>[] = [], appliedAt: string | null = null;
+  if (existsSync(manifestPath)) {
+    const manifest = manifestSchema.parse(JSON.parse(readFileSync(manifestPath, 'utf8')));
+    // Golden runs write the list without a stamp; then the file time says how recent the picks are.
+    selected = manifest.reports; appliedAt = manifest.bundleExportedAt ?? statSync(manifestPath).mtime.toISOString();
+  }
+  // A newer bundle is a deliberate release of new demo reports, so it replaces older picks for its cases.
+  const newer = !appliedAt || bundle.exportedAt > appliedAt;
   for (const report of bundle.reports) {
     const current = selected.find(r => r.case === report.case), trip = current && getSharedTrip(current.shareId);
-    if (trip && tripState(trip, { completedOnly: true }).result) continue;
+    if (!newer && trip && tripState(trip, { completedOnly: true }).result) continue;
     selected = selected.filter(r => r.case !== report.case);
     selected.push({ case: report.case, shareId: report.trip.shareId });
   }
-  const content = `${JSON.stringify({ note: 'Explicitly featured real reports; original investigation dates are preserved.', reports: selected }, null, 2)}\n`;
+  const stamp = !appliedAt || bundle.exportedAt > appliedAt ? bundle.exportedAt : appliedAt;
+  const content = `${JSON.stringify({ note: 'Explicitly featured real reports; original investigation dates are preserved.', bundleExportedAt: stamp, reports: selected }, null, 2)}\n`;
   if (!existsSync(manifestPath) || readFileSync(manifestPath, 'utf8') !== content) {
     const temporary = `${manifestPath}.${process.pid}.tmp`;
     writeFileSync(temporary, content); renameSync(temporary, manifestPath);

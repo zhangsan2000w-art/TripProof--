@@ -176,7 +176,9 @@ button.legend:hover { border-color: var(--line-2); background: var(--surface-2);
 .notice { padding: 11px 14px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
 .notice-closure, .notice-suspension { border-left: 3px solid var(--red); } .notice-warning, .notice-response { border-left: 3px solid #d39a3e; }
 .notice-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
-.notice-top strong { font-size: 14px; } .notice-top span { flex-shrink: 0; color: var(--muted); font-size: 12px; }
+.notice-top strong { font-size: 14px; }
+.notice-flag { margin-left: 8px; padding: 1px 7px; border-radius: 999px; background: var(--slate-soft); color: var(--slate-ink); font-size: 11px; font-style: normal; font-weight: 500; white-space: nowrap; }
+.notice.is-reported { border-style: dashed; } .notice-top span { flex-shrink: 0; color: var(--muted); font-size: 12px; }
 .notice q { display: block; margin-top: 5px; color: var(--ink-2); font-size: 13px; line-height: 1.7; }
 .notice a { display: inline-flex; align-items: center; gap: 6px; margin-top: 7px; color: var(--brand); font-size: 12px; }
 .notice a:hover { text-decoration: underline; }

@@ -84,6 +84,22 @@ it('不完整报告和重复标识不能进入发布包', () => {
   expect(() => parseSampleBundle({ ...bundle, reports: [{ ...bundle.reports[0], run: { ...bundle.reports[0].run, completedAt: null } }] })).toThrow();
 });
 
+it('新导出的示例包替换旧精选；本地新跑的报告不被旧包覆盖', () => {
+  const { bundle, path } = setup(); initializeSampleReports(path);
+  const fresh = structuredClone(bundle.reports[0]);
+  Object.assign(fresh.trip, { id: 'hangzhou-2', shareId: 'share-hangzhou-2' }); fresh.run.id = 'hangzhou-run-2';
+  const later = join(directory, 'later.json');
+  writeFileSync(later, JSON.stringify({ ...bundle, exportedAt: '2026-10-23T09:00:00.000Z', reports: [fresh, ...bundle.reports.slice(1)] }));
+  initializeSampleReports(later);
+  expect(sampleReports().map(r => r.shareId)).toContain('share-hangzhou-2');
+  expect(sampleReports().map(r => r.shareId)).not.toContain('share-hangzhou');
+  // A golden run rewrites the list without a stamp after the bundle was made.
+  writeFileSync(sampleManifestPath(), JSON.stringify({ reports: bundle.reports.map(r => ({ case: r.case, shareId: r.trip.shareId })) }));
+  initializeSampleReports(later);
+  expect(sampleReports().map(r => r.shareId)).toContain('share-hangzhou');
+  expect(sampleReports().map(r => r.shareId)).not.toContain('share-hangzhou-2');
+});
+
 it('清单中的失效链接会恢复为有完整结果的示例', () => {
   const { path } = setup(); initializeSampleReports(path);
   const manifest = JSON.parse(readFileSync(sampleManifestPath(), 'utf8'));

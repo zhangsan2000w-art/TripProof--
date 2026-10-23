@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { Dossier, Evidence, Fact, PlaceRisk } from '../lib/domain';
 import { addDays, today } from '../lib/dates';
-import { assessSafety, levelRank, advisorySeverity, type Advisory } from '../lib/risk';
+import { assessSafety, dayAdvisories, levelRank, advisorySeverity, type Advisory } from '../lib/risk';
 import { judgeItem, judgeTrip } from '../lib/judge';
 import { itemInsight } from '../lib/presentation';
-import { factSupported } from '../lib/facts';
+import { factSupported, mentionsDayAndWeekday } from '../lib/facts';
 import { sourceTier } from '../lib/evidence';
 import { item, trip, fact, hours, dossier } from './fixtures';
 
@@ -80,6 +80,41 @@ describe('预警与区域公告优先于营业时间', () => {
     expect(advisorySeverity(notice({ type: 'warning', hazard: '台风', level: '黄色' }))).toBe('high');
     expect(advisorySeverity(notice({ type: 'response', hazard: '台风', level: 'Ⅳ级' }))).toBe('high');
     expect(advisorySeverity(notice({ type: 'warning', hazard: '暴雨', level: '橙色' }))).toBe('severe');
+  });
+});
+
+describe('只有转载来源的预警', () => {
+  const response = notice({ type: 'response', hazard: '台风', level: 'Ⅲ级', area: '福建省' }, { tier: 4, domain: 'feed.example.com' });
+  const cover = [{ factId: response.id, how: 'area' as const, reason: '福建省内' }];
+  const places = [place('鼓浪屿', 'coastal', cover), place('中山路', 'outdoor', cover), place('厦门市博物馆', 'indoor', cover)];
+  const at = (r: Dossier, name: string, kind: 'scenic' | 'museum') => assessSafety(item({ placeName: name, city: '厦门', kind }), start, '厦门', r, undefined);
+  it('不判不能去，但受影响的地点也不标可前往', () => {
+    const r = risk('厦门', [response], places);
+    expect(at(r, '鼓浪屿', 'scenic')).toMatchObject({ verdict: 'unknown', code: 'HAZARD_REPORTED' });
+    expect(at(r, '中山路', 'scenic')).toMatchObject({ verdict: 'unknown', code: 'HAZARD_REPORTED' });
+    expect(at(r, '厦门市博物馆', 'museum')).toBeNull();
+  });
+  it('第二个独立站点佐证后按预警处理', () => {
+    const second = { ...response, id: 'second-response', domain: 'news.other.cn', evidenceId: 'e-other' } as Advisory;
+    const r = risk('厦门', [response, second], places.map(p => ({ ...p, covers: [...p.covers, { factId: second.id, how: 'area' as const, reason: '' }] })));
+    expect(at(r, '鼓浪屿', 'scenic')).toMatchObject({ verdict: 'conflict', code: 'HAZARD_EXPOSED' });
+  });
+  it('当天横幅保留这条报道并标明未证实', () => {
+    const banner = dayAdvisories([risk('厦门', [response], places)], start);
+    expect(banner).toHaveLength(1);
+    expect(banner[0].confirmed).toBe(false);
+  });
+});
+
+describe('预报表只写日和星期', () => {
+  const source = { publishedAt: '2026-10-22' };
+  it('日和星期都对上、来源是前几天发布的才算这一天', () => {
+    expect(mentionsDayAndWeekday('2026-10-24', '24日(周六):阴有中阵雨,局部大雨', source)).toBe(true);
+    expect(mentionsDayAndWeekday('2026-10-24', '24日（星期六） 阴有中阵雨', source)).toBe(true);
+    expect(mentionsDayAndWeekday('2026-10-24', '24日(周日):阴有中阵雨', source)).toBe(false);
+    expect(mentionsDayAndWeekday('2026-10-04', '24日(周六):阴有中阵雨', source)).toBe(false);
+    expect(mentionsDayAndWeekday('2026-10-24', '24日(周六):阴有中阵雨', { publishedAt: '2026-09-01' })).toBe(false);
+    expect(mentionsDayAndWeekday('2026-10-24', '24日(周六):阴有中阵雨', { publishedAt: null })).toBe(false);
   });
 });
 

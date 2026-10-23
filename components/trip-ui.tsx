@@ -47,8 +47,8 @@ export function WeatherChip({ weather, result }: { weather: ReturnType<typeof da
 /** The notices in force on a day, with the sentence and the link they come from. */
 export function NoticeList({ notices, compact = false }: { notices: ReturnType<typeof dayWeather>['notices']; compact?: boolean }) {
   if (!notices.length) return null;
-  return <ul className={`notice-list ${compact ? 'compact' : ''}`}>{notices.map(({ advisory: a, name, evidence: e }) => <li key={a.id} className={`notice notice-${a.payload.type}`}>
-    <div className="notice-top"><strong>{name}</strong><span>{monthDay(a.payload.from)}起{a.payload.to ? ` · 至${monthDay(a.payload.to)}` : ''}</span></div>
+  return <ul className={`notice-list ${compact ? 'compact' : ''}`}>{notices.map(({ advisory: a, name, confirmed, evidence: e }) => <li key={a.id} className={`notice notice-${a.payload.type} ${confirmed ? '' : 'is-reported'}`}>
+    <div className="notice-top"><strong>{name}{!confirmed && <em className="notice-flag">仅转载报道，未经官方证实</em>}</strong><span>{monthDay(a.payload.from)}起{a.payload.to ? ` · 至${monthDay(a.payload.to)}` : ''}</span></div>
     {!compact && <q>{a.quote}</q>}
     {e && <a href={e.finalUrl || e.url} target="_blank" rel="noopener noreferrer"><span className={`tier tier-${e.tier}`}>{tierLabels[e.tier]}</span>{e.title || e.site}<ExternalLink size={11}/></a>}
   </li>)}</ul>;
@@ -66,7 +66,7 @@ export function DayAlert({ weather, compact = false }: { weather: ReturnType<typ
   const bad = weather.blocked > 0;
   return <div className={`day-alert ${bad ? 'tone-bad' : 'tone-warn'}`} role="note">
     <Siren size={18}/>
-    <div><strong>{bad ? '这天有生效的预警或关闭公告' : '这天有生效的预警'}</strong><p>{[weather.blocked ? `${weather.blocked} 个地点不建议去` : '', weather.alerted ? `${weather.alerted} 处要在出发前再确认` : ''].filter(Boolean).join('，') || '出发前查看官方公告'}。官方公告优先于平台上的营业时间。</p><NoticeList notices={weather.notices} compact={compact}/></div>
+    <div><strong>{bad ? '这天有生效的预警或关闭公告' : weather.notices.some(n => n.confirmed) ? '这天有生效的预警' : '有网页报道这天的预警，未经官方证实'}</strong><p>{[weather.blocked ? `${weather.blocked} 个地点不建议去` : '', weather.alerted ? `${weather.alerted} 处要在出发前再确认` : ''].filter(Boolean).join('，') || '出发前查看官方公告'}。官方公告优先于平台上的营业时间。</p><NoticeList notices={weather.notices} compact={compact}/></div>
   </div>;
 }
 export function ProofLine({ result }: { result: RunResult }) {
