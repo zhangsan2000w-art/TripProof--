@@ -24,3 +24,25 @@ export async function prepareImages(files: File[]): Promise<InputImage[]> {
   }
   return output;
 }
+
+/**
+ * One display copy per screenshot for the report: at most 960px wide, re-encoded so
+ * photo metadata is dropped. Very long screenshots are scaled down to stay within canvas limits.
+ */
+export async function prepareDisplayImages(files: File[]): Promise<{ sourceIndex: number; data: string }[]> {
+  const output: { sourceIndex: number; data: string }[] = [];
+  for (const [index, file] of files.entries()) {
+    const bitmap = await createImageBitmap(file);
+    try {
+      const scale = Math.min(1, 960 / bitmap.width, 12000 / bitmap.height);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale)); canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const ctx = canvas.getContext('2d'); if (!ctx) throw new Error('浏览器无法处理图片，请改用文字输入。');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      output.push({ sourceIndex: index + 1, data: canvas.toDataURL('image/jpeg', 0.78) });
+      canvas.width = canvas.height = 1;
+    } finally { bitmap.close(); }
+  }
+  return output;
+}

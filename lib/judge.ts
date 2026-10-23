@@ -287,7 +287,7 @@ export function judgeTrip(trip: TripInput, dossiers: Dossier[]): Judgment[] {
     const judgments = judgeItem(item, trip, dossier);
     const weather = dossiers.find(d => d.venue.key === `weather:${city}:${dateForDay(trip.startDate, item.day)}`);
     if (item.kind === 'scenic' || /户外|登山|游船|步行|日落/.test(item.activity)) judgments.push(judgeWeather(item, trip, weather));
-    const safety = judgeSafety(item, trip, dossiers.find(d => d.venue.key === riskKey(city)), weather);
+    const safety = judgeSafety(item, trip, dossiers.find(d => d.venue.key === riskKey(city)));
     if (safety) judgments.push(safety);
     return judgments;
   }), ...judgeConnections(trip,dossiers)];

@@ -7,6 +7,7 @@ import { basisLabels, itemInsight, tierLabels, type ItemInsight, type RuleHighli
 import { api } from '@/lib/client';
 import { missingTimeNote } from '@/lib/itinerary';
 import { Status } from './status';
+import { StopSource } from './guide-view';
 
 export { tierLabels };
 export const checkLabels: Record<Judgment['type'], string> = { open_on_date: '当天是否开放', hours_fit: '开放与入场时段', reservation_rule: '预约规则', availability: '实时名额与库存', arrival_fit: '抵达与离开边界', service_hours: '交通运营时段', weather: '行程当天天气', safety: '预警与区域公告', guide_claim: '攻略信息是否过时', connection_fit: '与前一站的交通衔接' };
@@ -76,10 +77,11 @@ export function EvidenceAudit({ item, judgments, dossiers, tripId, shareId, labe
   </details>;
 }
 /** Workspace side panel for the selected stop. */
-export function EvidencePanel({ item, judgments, dossiers, tripId, shareId, onAlternative, onPlanTime, busy }: { item: Item; judgments: Judgment[]; dossiers: Dossier[]; tripId?: string; shareId?: string; onAlternative?: () => void; onPlanTime?: () => void; busy?: boolean }) {
+export function EvidencePanel({ item, judgments, dossiers, tripId, shareId, onAlternative, onPlanTime, busy, images = [], onImage }: { item: Item; judgments: Judgment[]; dossiers: Dossier[]; tripId?: string; shareId?: string; onAlternative?: () => void; onPlanTime?: () => void; busy?: boolean; images?: number[]; onImage?: (n: number) => void }) {
   const insight = itemInsight(item, judgments, dossiers, judgments[0]?.date || today());
   return <div className="evidence-panel">
     <div className="panel-heading"><span className="kicker">地点详情</span><h2>{item.placeName}</h2><p>{item.start ? `计划 ${item.start}${item.end ? `—${item.end}` : ' 到达'}` : missingTimeNote(item)}{item.activity ? ` · ${item.activity}` : ''}</p></div>
+    {onImage && <StopSource item={item} images={images} onOpen={onImage}/>}
     {!judgments.length && <div className="empty-evidence"><FileSearch size={26}/><h3>{busy ? '正在为这一站查找证据' : '还没有检查结果'}</h3><p>规则和来源通过核验后，结论会显示在这里。</p></div>}
     {!!judgments.length && <>
       <p className={`stop-takeaway tone-${insight.state}`}>{insight.message}</p>

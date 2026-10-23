@@ -154,7 +154,7 @@ async function mainInvestigation(run: Run, trip: Trip): Promise<RunResult> {
   const groups = new Map<string, Item[]>();
   for (const item of trip.items) { const key = `${item.city || trip.destinationCity}:${item.placeName}`; groups.set(key, [...(groups.get(key) ?? []), item]); }
   const tasks = [...groups.values()].sort((a, b) => (a[0].kind === 'museum' ? -1 : 0) - (b[0].kind === 'museum' ? -1 : 0));
-  emit(run.id, 'plan', { message: `先查目的地预警和区域关闭公告，再调查 ${groups.size} 个地点的规则，最后计算你的日期与时段。`, venues: tasks.map(items => items[0].placeName), limit: run.limit });
+  emit(run.id, 'plan', { message: `调查 ${groups.size} 个地点的开放、入场和预约规则，同时查目的地的临时关闭公告，最后按你的日期与时段计算。`, venues: tasks.map(items => items[0].placeName), limit: run.limit });
   // Safety searches start first, so a long venue list cannot use up the budget before them.
   const cityDates = new Map<string, Set<string>>();
   for (const item of trip.items) { const city = item.city || trip.destinationCity; cityDates.set(city, (cityDates.get(city) ?? new Set()).add(dateForDay(trip.startDate, item.day))); }
@@ -189,8 +189,7 @@ async function mainInvestigation(run: Run, trip: Trip): Promise<RunResult> {
   for (const risk of await risks) {
     await readRisk(run.id, trip, risk, result.dossiers); result.dossiers.push(risk);
     for (const item of trip.items.filter(i => (i.city || trip.destinationCity) === risk.venue.city)) {
-      const weather = result.dossiers.find(d => d.venue.key === `weather:${risk.venue.city}:${dateForDay(trip.startDate, item.day)}`);
-      const judgment = judgeSafety(item, trip, risk, weather);
+      const judgment = judgeSafety(item, trip, risk);
       if (judgment) { result.judgments.push(judgment); emit(run.id, 'verdict', judgment); }
     }
     saveResult(run.id, result);

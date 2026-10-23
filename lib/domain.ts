@@ -31,6 +31,12 @@ export const tripInputSchema = z.object({
   items: z.array(itemSchema).min(1).max(50),
 });
 export type TripInput = z.infer<typeof tripInputSchema>;
+/** The guide as the user submitted it: the text and display copies of the screenshots. */
+export const guideImageSchema = z.object({ sourceIndex: z.number().int().min(1).max(9), data: z.string().max(8_000_000).regex(/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/) });
+export const guideSchema = z.object({ text: z.string().max(40000), images: z.array(guideImageSchema).max(9) })
+  .refine(g => new Set(g.images.map(i => i.sourceIndex)).size === g.images.length, '图片编号不能重复');
+export type Guide = z.infer<typeof guideSchema>;
+export type GuideSummary = { text: string; images: number[] };
 export type Trip = TripInput & { id: string; shareId: string; createdAt: string; updatedAt: string; revision: number };
 
 const period = z.object({ from: z.string().regex(/^\d{2}-\d{2}$/), to: z.string().regex(/^\d{2}-\d{2}$/), open: timeString, close: closingTime, lastEntry: timeString.nullable() });
