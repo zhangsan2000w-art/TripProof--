@@ -1,0 +1,6 @@
+import { Search, Clock3, Check, AlertCircle } from 'lucide-react';
+import type { SearchCall } from '@/lib/domain';
+import { localTime } from '@/lib/dates';
+export function CallLog({ calls }: { calls: SearchCall[] }) {
+  return <div className="call-log">{!calls.length && <div className="empty-log"><Search size={22}/><p>真实搜索调用会在这里逐条记录。</p></div>}{calls.map((call, i) => <div className="call-row" key={call.id}><div className="call-index">{String(i + 1).padStart(2, '0')}</div><div className="call-main"><div className="call-query">{call.query}</div><div className="call-meta"><span><Clock3 size={11}/>{localTime(call.calledAt, true)}</span><span>{call.latencyMs}ms</span><span>{call.resultCount}条结果</span>{call.version && <span>{call.version}</span>}{call.cacheHit && <span className="cache-label">缓存 · 保留原 RequestId</span>}</div>{call.params.site && <div className="call-param">Site={call.params.site}</div>}{call.params.freshness && <div className="call-param">Freshness={call.params.freshness}</div>}<div className="request-id"><span>RequestId</span><code>{call.requestId || '未获得（请求未成功）'}</code></div>{(call.errorCode || call.msg) && <p className="call-error">{call.errorCode || call.msg}</p>}</div><span className={`call-state ${call.errorCode ? 'failed' : ''}`}>{call.errorCode ? <AlertCircle size={15}/> : <Check size={15}/>}</span></div>)}</div>;
+}

@@ -1,0 +1,16 @@
+node_modules
+.next
+.data
+.env*
+!.env.example
+.git
+docs/key.md
+cases
+artifacts
+test-results
+tmp
+playwright-report
+coverage
+*.db*
+*.tsbuildinfo
+.DS_Store
