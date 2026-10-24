@@ -4,7 +4,7 @@ import { registrableDomain } from './evidence';
 import { createHash } from 'node:crypto';
 import { factSupported } from './facts';
 import { judgeSafety, riskKey } from './risk';
-import { unresolvedTarget, openArea, flexibleTransfer, transportWindow } from './itinerary';
+import { unresolvedTarget, openArea, flexibleTransfer, endpointStop, transportWindow } from './itinerary';
 function seasonLength(from: string, to: string) {
   const start = Date.parse(`2000-${from}`), end = Date.parse(`2000-${to}`);
   return ((end - start) / 86400000 + 366) % 366 + 1;
@@ -280,7 +280,8 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     make('availability', 'unknown', 'REALTIME', `实时门票和预约库存无法通过网页搜索确认，请到${dossier?.venue.officialDomain ? `场馆官方渠道（${dossier.venue.officialDomain}）` : '场馆官方 App 或小程序'}核实。`);
   }
   if (item.kind === 'transport' && !unresolved) {
-    const r = flexibleTransfer(item)?null:resolve(facts.filter(f => f.kind === 'service_hours'), 'service_hours');
+    const endpoint = endpointStop(item);
+    const r = flexibleTransfer(item) || endpoint ? null : resolve(facts.filter(f => f.kind === 'service_hours'), 'service_hours');
     if (r) {
       const f = r.picked[0];
       if (f.kind === 'service_hours') {
@@ -302,7 +303,8 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
         }
       }
     }
-    make('availability', 'unknown', flexibleTransfer(item)?'LIVE_TRAFFIC':'REALTIME', flexibleTransfer(item)?'步行或打车按游览进度出发，无需核对首末班；路况、候车和上车位置以当天地图导航或现场为准。':item.profile?.mode==='rail'?'余票、实时晚点无法由网页搜索确认，请到12306或承运方核实。':'运营时间不代表已经有票或一定能登乘；班次、排队及临时停运请在出发当天向运营方核实。');
+    if (endpoint) make('availability', 'unknown', 'NO_SERVICE_CHOSEN', '这是行程的起点或终点车站，攻略没写乘哪班车；出发前按实际线路查班次和余票。');
+    else make('availability', 'unknown', flexibleTransfer(item)?'LIVE_TRAFFIC':'REALTIME', flexibleTransfer(item)?'步行或打车按游览进度出发，无需核对首末班；路况、候车和上车位置以当天地图导航或现场为准。':item.profile?.mode==='rail'?'余票、实时晚点无法由网页搜索确认，请到12306或承运方核实。':'运营时间不代表已经有票或一定能登乘；班次、排队及临时停运请在出发当天向运营方核实。');
     const duration = facts.filter(f => f.kind === 'transport_duration');
     if (duration.length) {
       const r = resolve(duration, 'hours_fit');
@@ -313,7 +315,7 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     }
   }
   const lastDay = Math.max(...trip.items.map(i => i.day));
-  if (!window && !flexibleTransfer(item) && ((item.day === 1 && trip.arriveDay1) || (item.day === lastDay && trip.leaveLastDay))) {
+  if (!window && !flexibleTransfer(item) && !endpointStop(item) && ((item.day === 1 && trip.arriveDay1) || (item.day === lastDay && trip.leaveLastDay))) {
     if (!item.start) make('arrival_fit', 'unknown', 'MISSING_TIME', '缺少计划时间，无法核对抵达或离开边界。');
     else if (item.day === 1 && trip.arriveDay1 && minutes(item.start) < minutes(trip.arriveDay1)) make('arrival_fit', 'conflict', 'BEFORE_ARRIVAL', `计划 ${item.start} 开始，早于你填写的抵达时间 ${trip.arriveDay1}。`);
     else if (item.day === lastDay && trip.leaveLastDay && minutes(item.end ?? item.start) > minutes(trip.leaveLastDay)) make('arrival_fit', 'conflict', 'AFTER_DEPARTURE', `计划时段晚于你填写的离开时间 ${trip.leaveLastDay}。`);

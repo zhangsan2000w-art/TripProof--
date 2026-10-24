@@ -1,11 +1,11 @@
 import { expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { missingTimeNote, prepareDraft, unresolvedTarget, flexibleTransfer } from '../lib/itinerary';
+import { missingTimeNote, prepareDraft, unresolvedTarget, flexibleTransfer, endpointStop } from '../lib/itinerary';
 import { placeNames, searchName, selectVenueSources } from '../lib/source-selection';
 import { judgeItem } from '../lib/judge';
 import { itemInsight } from '../lib/presentation';
-import type { Draft, Evidence } from '../lib/domain';
-import { item, profile, trip } from './fixtures';
+import type { Draft, Evidence, Fact } from '../lib/domain';
+import { dossier, hours, item, profile, trip } from './fixtures';
 
 it('保留含零宽字符的上海原文作为回归输入', () => {
   const text = readFileSync(new URL('./fixtures/shanghai-itinerary.md', import.meta.url), 'utf8');
@@ -34,6 +34,11 @@ it('Citywalk和箭头是活动及路线格式，不能导致所有地点来源�
   const e: Evidence = { id: 'source', searchCallId: 'c', title: '武康路开放时间', passage: '武康路公共道路全天开放', content: '', url: 'https://example.com/wukang', finalUrl: null, site: 'example.com', retrievedAt: '', publishedAt: null, score: null, authorityLevel: null, tier: 3, linkStatus: 'ok', linkCheckedAt: null, pageSha256: null };
   expect(selectVenueSources([e], '武康路Citywalk', '上海', null)).toEqual([e]);
 });
+it('页面把地点名写短了也交给读取模型判断，完全同名仍排在前面', () => {
+  const page = (id: string, title: string): Evidence => ({ id, searchCallId: 'c', title, passage: '开放时间 09:00-17:00', content: '', url: `https://you.ctrip.com/${id}`, finalUrl: null, site: 'you.ctrip.com', retrievedAt: '', publishedAt: null, score: null, authorityLevel: null, tier: 3, linkStatus: 'ok', linkCheckedAt: null, pageSha256: null });
+  const short = page('a', '杭州市临安区净土寺遗址'), exact = page('b', '净土寺遗址展示馆开放时间'), other = page('c', '灵隐寺开放时间');
+  expect(selectVenueSources([short, other, exact], '净土寺遗址展示馆', '杭州', null)).toEqual([exact, short]);
+});
 it('未指定商家的午餐保留为待选定，不伪装成没有搜到营业时间的场馆', () => {
   const i = item({ kind: 'restaurant', placeName: '安福路或武康路附近', profile: profile({ undecided: true }) }), t = trip([i]);
   const js = judgeItem(i, t);
@@ -57,5 +62,17 @@ it('两站之间不定时的步行和打车并入下一站说明，有班次的�
   expect(result[1].claimedRules).toContainEqual({kind:'transport',text:'西湖 → 断桥：步行20分钟'});
   expect(result[4].claimedRules).toContainEqual({kind:'transport',text:'雷峰塔 → 河坊街：打车10分钟'});
   expect(draft.days[0].items).toHaveLength(8);
+});
+it('攻略没写交通方式的起点或终点车站显示出行参考，不拿各条线路的班次互相比较',()=>{
+  const station=item({kind:'transport',placeName:'临安东站',start:null,end:null,profile:profile()}),t=trip([station]);
+  const line=(entity:string,first:string,last:string)=>Object.assign(hours(),{kind:'service_hours',payload:{entity,first,last,lastDayOffset:0,note:''}}) as Fact;
+  const d=dossier([line('K598路','05:30','19:50'),line('598A路','06:00','17:00')],'临安东站');
+  const js=judgeItem(station,t,d),view=itemInsight(station,js,[d],t.startDate);
+  expect(js.some(j=>j.type==='service_hours')).toBe(false);
+  expect(js).toContainEqual(expect.objectContaining({type:'availability',reasonCode:'NO_SERVICE_CHOSEN'}));
+  expect(view.state).toBe('reference');
+  // A ride the guide does name keeps its timetable check.
+  expect(endpointStop({...station,profile:profile({mode:'bus'})})).toBe(false);
+  expect(endpointStop({...station,start:'08:00'})).toBe(false);
 });
 it('有明确时间的步行衔接仍保留，但不使用班次运营时间作可行确认',()=>{const i=item({kind:'transport',placeName:'雷峰塔—河坊街',sourceText:'从雷峰塔步行到河坊街',start:'18:00',end:'18:30',profile:profile({mode:'walk'})});expect(flexibleTransfer(i)).toBe(true);expect(judgeItem(i,trip([i])).some(j=>j.type==='service_hours')).toBe(false);expect(flexibleTransfer({...i,profile:profile({mode:'mixed'})})).toBe(false);});

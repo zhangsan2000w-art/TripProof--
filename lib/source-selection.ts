@@ -25,12 +25,18 @@ export function selectVenueSources(pages: Evidence[], name: string, city: string
   const names = placeNames(name, transport);
   const cores = names.map(n => n.replace(new RegExp(`^${city.replace(/市$/, '')}市?`), '').replace(/景区$|公园$|风景区$|商圈$/, '') || n).filter(c => c.length >= 2);
   const matches = (text: string) => names.some(n => text.includes(n)) || cores.some(c => text.includes(c));
+  // Pages often shorten or rename a place ("净土寺遗址" for "净土寺遗址展示馆"). A title sharing
+  // most of the name's adjacent character pairs is kept for the reader, which decides whether
+  // it is the same place; exact names still rank first.
+  const pairs = (text: string) => [...text].slice(0, -1).map((c, i) => c + [...text][i + 1]);
+  const close = (title: string) => names.some(n => { const own = pairs(n), hit = own.filter(p => title.includes(p)).length; return own.length >= 3 && hit >= 3 && hit / own.length >= .5; });
   const score = (e: Evidence) => {
     const title = e.title.replace(/\s+/g, ''), body = `${e.passage} ${e.content}`.replace(/\s+/g, '');
     const titleMatch = matches(title);
     const bodyMatch = matches(body);
+    const nearTitle = !titleMatch && close(title);
     const rule = /开放时间|营业时间|停止入|停止售|参观须知|预约|首末班|运营时间|闭馆|关闭|临时调整/.test(`${title} ${body}`);
-    return (titleMatch ? 100 : bodyMatch ? 70 : -100) + (rule ? 25 : 0) + (officialDomain && e.site === officialDomain ? 8 : 0) + (5 - e.tier) * 3 + (mixedProviders ? 0 : Math.min(1, e.score ?? 0));
+    return (titleMatch ? 100 : nearTitle ? 85 : bodyMatch ? 70 : -100) + (rule ? 25 : 0) + (officialDomain && e.site === officialDomain ? 8 : 0) + (5 - e.tier) * 3 + (mixedProviders ? 0 : Math.min(1, e.score ?? 0));
   };
   const unique = [...new Map(pages.map(p => [p.url, p])).values()].sort((a, b) => score(b) - score(a));
   const selected: Evidence[] = [], domains = new Map<string, number>();
