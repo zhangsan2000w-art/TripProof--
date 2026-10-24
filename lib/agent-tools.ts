@@ -7,7 +7,7 @@ import { searchSources } from './search';
 import { verifyEvidence } from './evidence';
 import { extractFacts, supportedDossierFacts } from './facts';
 import { searchName, selectVenueSources } from './source-selection';
-import { openArea, unresolvedTarget, flexibleTransfer, placeContext } from './itinerary';
+import { openArea, unresolvedTarget, flexibleTransfer, endpointStop, placeContext } from './itinerary';
 import { judgeTrip } from './judge';
 import { rippleEffects, suggestions } from './impact';
 import { redact } from './llm';
@@ -92,6 +92,8 @@ export async function investigateTargets(ctx:ToolContext,ids:string[],focus:Agen
   const investigate=async(item:Item,onModelReady?:()=>void)=>{
     assertRunning();const d=dossierFor(ctx,item),check=ctx.state.checks.find(c=>c.itemId===item.id)!;
     const unresolved=unresolvedTarget(item);if(unresolved){d.limitations=[unresolved.message];check.status='needs_input';check.stopReason=unresolved.message;ctx.persist();return;}
+    // A start or end station with no chosen service has no timetable to look up.
+    if(endpointStop(item)){check.status='done';check.stopReason='起点或终点车站，攻略没写乘哪班车，不查班次。';ctx.persist();return;}
     if(check.noProgress>=2){check.stopReason='连续两轮未获得新增有效证据，停止补查。';return;}
     const target=placeContext(item),name=redact(searchName(target.name,item.kind==='transport')),city=redact(d.venue.city);
     const address=item.kind==='restaurant'&&target.address?` ${redact(target.address)}`:'';

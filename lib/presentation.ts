@@ -1,7 +1,7 @@
 import type { Alternative, Dossier, Evidence, Fact, Item, Judgment, Suggestion, TripInput } from './domain';
 import { dateForDay, inSeason, weekday, weekdayLabel } from './dates';
 import { dayAdvisories, scopeName, type Advisory } from './risk';
-import { unresolvedTarget, flexibleTransfer, openArea, planTimeLabel } from './itinerary';
+import { unresolvedTarget, flexibleTransfer, endpointStop, openArea, planTimeLabel } from './itinerary';
 
 export type PlanState = 'adjust' | 'fits' | 'partial' | 'reference' | 'alert' | 'needs_time' | 'verify' | 'pending';
 export const planLabels: Record<PlanState, string> = { adjust: '需调整', fits: '时段符合', partial: '部分已核实', reference: '出行参考', alert:'留意预警', needs_time: '待补时间', verify: '待核实', pending: '尚未核验' };
@@ -57,7 +57,7 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   const venueFacts = dossiers.filter(d => js.some(j => j.venueId === d.venue.id)).flatMap(d => d.facts).filter(usable);
   const evidence = dossiers.flatMap(d => d.evidence);
   const unresolved = unresolvedTarget(item);
-  const flexible = flexibleTransfer(item), area = openArea(item);
+  const endpoint = endpointStop(item), flexible = flexibleTransfer(item) || endpoint, area = openArea(item);
   const ruleBasis = basisOf;
   const place = !unresolved && item.kind !== 'transport' && item.kind !== 'hotel';
   const rules: RuleHighlight[] = [];
@@ -155,7 +155,8 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   if (serviceFact?.kind === 'service_hours') {
     rules.push({ label: '运营时间', value: `${serviceFact.payload.first || '首班待核实'}—${serviceFact.payload.last}${serviceFact.payload.lastDayOffset ? '（次日）' : ''}`, verified: service?.verdict !== 'unknown', basis: service?.verdict !== 'unknown' ? basisOf([serviceFact]) : 'reference', note: service?.reasonCode === 'SOURCES_DISAGREE' ? '来源说法不一致' : undefined });
     usedFacts.push(serviceFact);
-  } else if (flexible) rules.push({ label: '出行方式', value: modeLabels[item.profile?.mode ?? 'walk'] ?? '自行出发', verified: false, tone: 'muted', note: '无需核对首末班；路况与候车以当天为准' });
+  } else if (endpoint && !unresolved) rules.push({ label: '出行方式', value: '攻略未写', verified: false, tone: 'muted', note: '按实际乘坐的线路查班次' });
+  else if (flexible) rules.push({ label: '出行方式', value: modeLabels[item.profile?.mode ?? 'walk'] ?? '自行出发', verified: false, tone: 'muted', note: '无需核对首末班；路况与候车以当天为准' });
   else if (item.kind === 'transport' && !unresolved) rules.push({ label: '运营时间', value: '未查到', verified: false, tone: 'muted', note: '以该线路运营方当天信息为准' });
 
   const updates = js.filter(j => j.type === 'guide_claim' && j.verdict === 'conflict');
@@ -181,7 +182,7 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   const message = (first && first.type === 'open_on_date' && closedText[first.reasonCode] ? `${md(date.slice(5))}（${weekdayLabel(date)}）${closedText[first.reasonCode]}，这天去会扑空。` : first?.explanation) ?? (alert ? `${alert.explanation}${usual}` : null) ?? (
     unresolved ? unresolved.message :
     state === 'fits' ? (item.kind==='transport'?service?.explanation:openCheck?.reasonCode==='PUBLIC_AREA'?'公共区域，随时可以去；其中的场馆和店铺按各自时间。':item.kind==='restaurant'?`${item.start}${item.end?`—${item.end}`:''} 在查到的营业时段内；临时休息与座位情况出发前向商家确认。`:allDay ? '全天开放，任何时间都可以去。' : item.start ? '当天开放，你填的时段在开放时间内。' : '当天开放。') :
-    state === 'reference' ? '按游览进度步行或打车，无需核对首末班；候车、路况和实际耗时以当天导航或现场为准。' :
+    state === 'reference' ? (endpoint && !unresolved ? '行程的起点或终点车站，攻略没写乘哪班车；出发前按实际线路查班次。' : '按游览进度步行或打车，无需核对首末班；候车、路况和实际耗时以当天导航或现场为准。') :
     state === 'partial' ? `${hoursCheck?.verdict==='confirmed'?`计划时段符合 ${hours||'已查到的营业窗口'}`:openCheck?.verdict==='confirmed'?'当天常规开放规则已核实':'已核实部分规则'}；${openCheck?.verdict==='unknown'?'当天是否开放仍缺少依据':hoursCheck?.verdict==='unknown'?'营业时段仍需确认':'还有必要检查未完成'}。` :
     state === 'needs_time' && serviceFact?.kind === 'service_hours' && !hoursVerified ? `查到${serviceFact.payload.first ? `首班 ${serviceFact.payload.first}、` : ''}末班 ${serviceFact.payload.last}${serviceFact.payload.lastDayOffset ? '（次日）' : ''}；补上乘车时间就能核对赶不赶得上。` :
     state === 'needs_time' ? (openCheck?.verdict === 'confirmed' ? `当天开放${hours ? `，${span(...hours.split('—') as [string, string])}` : ''}${entry ? `，${entry} 前入场` : ''}。补上到达时间就能核对来不来得及。` : `营业时间已查到${hours ? `（${hours}）` : ''}，但当天是否开放还没确认。`) :

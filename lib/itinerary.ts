@@ -17,6 +17,13 @@ const untimedModes = new Set<PlaceProfile['mode']>(['walk', 'taxi', 'drive', 'bi
 export function flexibleTransfer(item: Profiled) {
   return item.kind === 'transport' && untimedModes.has(item.profile?.mode ?? null);
 }
+/**
+ * A station named as where the day starts or ends, with no way of travel and no time:
+ * there is no chosen service whose timetable could be checked.
+ */
+export function endpointStop(item: Profiled & Partial<Pick<Item, 'start' | 'end'>>) {
+  return item.kind === 'transport' && !!item.profile && item.profile.mode === null && !item.start && !item.end;
+}
 
 /** A nested transfer inherits a window, never an invented departure time. */
 export function transportWindow(item: Item, items: Item[]) {
