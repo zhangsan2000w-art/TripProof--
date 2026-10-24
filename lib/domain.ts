@@ -123,7 +123,7 @@ export type Alternative = { itemId: string; name: string; reason: string; dossie
 export type AnnouncementResult = { title: string; claims: string[]; verdict: Verdict; explanation: string; evidenceIds: string[] };
 export type RunKind = 'investigation' | 'announcement' | 'alternatives';
 export type Run = { id: string; tripId: string; kind: RunKind; status: 'queued' | 'running' | 'waiting_user' | 'cancelled' | 'completed' | 'failed'; createdAt: string; updatedAt: string; startedAt: string | null; completedAt: string | null; firstVerdictAt: string | null; used: number; limit: number; input: Record<string, unknown>; result: RunResult | null; error: string | null; tripRevision: number };
-export type EventType = 'plan' | 'search' | 'evidence' | 'fact' | 'verdict' | 'ripple' | 'suggestion' | 'budget' | 'done' | 'error' | 'agent_step' | 'agent_message' | 'agent_question' | 'agent_progress' | 'agent_proposal' | 'waiting_user' | 'cancelled';
+export type EventType = 'plan' | 'search' | 'evidence' | 'fact' | 'verdict' | 'ripple' | 'suggestion' | 'budget' | 'done' | 'error' | 'agent_step' | 'agent_message' | 'agent_question' | 'agent_progress' | 'agent_proposal' | 'waiting_user' | 'cancelled' | 'dossier' | 'report_update' | 'agent_state';
 export type RunEvent = { id: number; runId: string; type: EventType; data: unknown; at: string };
 export type TripState = { trip: Trip; run: Run | null; runs: Pick<Run, 'id' | 'kind' | 'status' | 'createdAt' | 'tripRevision'>[]; result: RunResult | null; events: RunEvent[]; agent?: import('./agent-types').AgentView | null };
 export const emptyResult = (): RunResult => ({ dossiers: [], judgments: [], ripples: [], suggestions: [], alternatives: [], announcement: null, limitations: [] });

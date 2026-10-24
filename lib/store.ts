@@ -68,6 +68,11 @@ export function getRun(runId: string): Run {
   if (!run) throw new AppError('NOT_FOUND', '调查任务不存在。', 404);
   return run;
 }
+export function getRunProgress(runId: string) {
+  const run = database().db.select({ id:s.runs.id,tripId:s.runs.tripId,status:s.runs.status,used:s.runs.used,limit:s.runs.limit,firstVerdictAt:s.runs.firstVerdictAt,updatedAt:s.runs.updatedAt }).from(s.runs).where(eq(s.runs.id,runId)).get();
+  if (!run) throw new AppError('NOT_FOUND', '调查任务不存在。', 404);
+  return run;
+}
 export function createRun(trip: Trip, kind: RunKind = 'investigation', input: Record<string, unknown> = {}, status: Run['status'] = 'queued'): Run {
   const { db, sqlite } = database();
   return sqlite.transaction(() => {
@@ -100,26 +105,38 @@ export function claimRun(): Run | null {
   })();
 }
 export function emit(runId: string, type: EventType, data: unknown) {
-  const { db } = database();
-  db.insert(s.events).values({ runId, type, data, at: now() }).run();
+  const { db, sqlite } = database(), at = now();
+  db.insert(s.events).values({ runId, type, data, at }).run();
   const judgment=type==='verdict'?data as import('./domain').Judgment:null;
-  const run=getRun(runId);
-  const meaningful=judgment&&!run.firstVerdictAt&&['open_on_date','hours_fit','reservation_rule','service_hours','guide_claim'].includes(judgment.type)
-    &&getTrip(run.tripId).items.some(i=>i.id===judgment.itemId)
-    &&run.result?.dossiers.some(d=>d.facts.some(f=>judgment.factIds.includes(f.id)&&f.quoteVerified&&f.venueMatch==='exact'&&f.linkStatus==='ok'
-      &&d.evidence.some(e=>e.id===f.evidenceId&&e.linkStatus==='ok'&&judgment.evidenceIds.includes(e.id))));
-  db.update(s.runs).set({ updatedAt: now(), ...(meaningful ? { firstVerdictAt: now() } : {}) }).where(eq(s.runs.id, runId)).run();
+  if (judgment && ['open_on_date','hours_fit','reservation_rule','service_hours','guide_claim'].includes(judgment.type)
+    && judgment.factIds?.length && judgment.evidenceIds?.length) {
+    sqlite.prepare(`UPDATE runs SET first_verdict_at=? WHERE id=? AND first_verdict_at IS NULL
+      AND EXISTS (SELECT 1 FROM items WHERE trip_id=runs.trip_id AND json_extract(payload,'$.id')=?)
+      AND EXISTS (SELECT 1 FROM facts f JOIN evidence e ON e.run_id=f.run_id AND e.id=json_extract(f.payload,'$.evidenceId')
+        WHERE f.run_id=runs.id AND f.id IN (SELECT value FROM json_each(?)) AND e.id IN (SELECT value FROM json_each(?))
+        AND json_extract(f.payload,'$.quoteVerified')=1 AND json_extract(f.payload,'$.venueMatch')='exact'
+        AND json_extract(f.payload,'$.linkStatus')='ok' AND json_extract(e.payload,'$.linkStatus')='ok'
+        AND EXISTS (SELECT 1 FROM json_each(runs.result,'$.dossiers') d
+          WHERE EXISTS (SELECT 1 FROM json_each(d.value,'$.facts') cf WHERE json_extract(cf.value,'$.id')=f.id)
+          AND EXISTS (SELECT 1 FROM json_each(d.value,'$.evidence') ce WHERE json_extract(ce.value,'$.id')=e.id)))`)
+      .run(at,runId,judgment.itemId,JSON.stringify(judgment.factIds),JSON.stringify(judgment.evidenceIds));
+  }
+  db.update(s.runs).set({ updatedAt: at }).where(eq(s.runs.id, runId)).run();
 }
 export function readEvents(runId: string, after = 0) { return database().db.select().from(s.events).where(and(eq(s.events.runId, runId), gt(s.events.id, after))).orderBy(asc(s.events.id)).all(); }
 export function saveResult(runId: string, result: RunResult) {
-  const { db } = database();
+  const { db, sqlite } = database();
   db.transaction(tx => {
     tx.update(s.runs).set({ result, updatedAt: now() }).where(eq(s.runs.id, runId)).run();
     const groups = [
-      [s.venues, result.dossiers.map(d => d.venue)], [s.evidence, result.dossiers.flatMap(d => d.evidence)],
-      [s.facts, result.dossiers.flatMap(d => d.facts)], [s.judgments, result.judgments], [s.suggestions, result.suggestions],
+      ['venues', result.dossiers.map(d => d.venue)], ['evidence', result.dossiers.flatMap(d => d.evidence)],
+      ['facts', result.dossiers.flatMap(d => d.facts)], ['judgments', result.judgments], ['suggestions', result.suggestions],
     ] as const;
-    for (const [table, rows] of groups) for (const row of rows) tx.insert(table).values({ id: row.id, runId, payload: row }).onConflictDoUpdate({ target: [table.runId, table.id], set: { payload: row } }).run();
+    for(const [table,rows] of groups){
+      const insert=sqlite.prepare(`INSERT INTO ${table}(id,run_id,payload) VALUES(?,?,?) ON CONFLICT(run_id,id) DO UPDATE SET payload=excluded.payload WHERE payload<>excluded.payload`);
+      for(const row of rows)insert.run(row.id,runId,JSON.stringify(row));
+      sqlite.prepare(`DELETE FROM ${table} WHERE run_id=? AND id NOT IN (SELECT value FROM json_each(?))`).run(runId,JSON.stringify(rows.map(row=>row.id)));
+    }
   });
 }
 export function finishRun(runId: string, result: RunResult, error: string | null = null) {
@@ -139,7 +156,7 @@ export function recoverInterruptedRuns() {
     }
   }
 }
-export function tripState(trip: Trip, options: { completedOnly?: boolean } = {}): TripState {
+export function tripState(trip: Trip, options: { completedOnly?: boolean; afterEvent?: number } = {}): TripState {
   const rows = database().db.select().from(s.runs).where(eq(s.runs.tripId, trip.id)).orderBy(desc(s.runs.createdAt)).all();
   const available = rows.filter(r => !options.completedOnly || r.status === 'completed');
   const run = available.find(r => r.tripRevision === trip.revision) ?? null;
@@ -162,7 +179,7 @@ export function tripState(trip: Trip, options: { completedOnly?: boolean } = {})
       }
     }
   }
-  return { trip, run, result, runs: rows.map(({ id, kind, status, createdAt, tripRevision }) => ({ id, kind, status, createdAt, tripRevision })), events: run ? readEvents(run.id) : [], ...(!options.completedOnly ? {agent:agentView(trip.id,run?.id ?? null)} : {}) };
+  return { trip, run, result, runs: rows.map(({ id, kind, status, createdAt, tripRevision }) => ({ id, kind, status, createdAt, tripRevision })), events: run ? readEvents(run.id,options.afterEvent??0) : [], ...(!options.completedOnly ? {agent:agentView(trip.id,run?.id ?? null)} : {}) };
 }
 export function cacheGet<T>(key: string): T | null {
   const row = database().db.select().from(s.cache).where(eq(s.cache.key, key)).get();
@@ -180,7 +197,7 @@ export function quota(key: string, limit: number) {
 export function reserveSearch(runId: string, venueId?: string) {
   const { sqlite } = database();
   sqlite.transaction(() => {
-    const run = getRun(runId);
+    const run = getRunProgress(runId);
     if (run.status === 'cancelled') throw new AppError('RUN_CANCELLED', '调查已停止。', 409);
     if (venueId) {
       const used = (sqlite.prepare('SELECT count FROM venue_usage WHERE run_id=? AND venue_id=?').get(runId,venueId) as {count:number}|undefined)?.count ?? 0;
@@ -194,10 +211,17 @@ export function reserveSearch(runId: string, venueId?: string) {
     if (venueId) sqlite.prepare('INSERT INTO venue_usage(run_id,venue_id,count) VALUES(?,?,1) ON CONFLICT(run_id,venue_id) DO UPDATE SET count=count+1').run(runId,venueId);
     sqlite.prepare('INSERT INTO usage(key,count) VALUES(?,1) ON CONFLICT(key) DO UPDATE SET count=count+1').run(dailyKey);
   })();
-  emit(runId, 'budget', { used: getRun(runId).used, limit: getRun(runId).limit });
+  const run=getRunProgress(runId);
+  emit(runId, 'budget', { used: run.used, limit: run.limit });
 }
 export function saveCall(runId: string, call: { id: string }) { database().db.insert(s.searchCalls).values({ id: call.id, runId, payload: call }).onConflictDoUpdate({ target: [s.searchCalls.runId, s.searchCalls.id], set: { payload: call } }).run(); }
-export function listCalls(runId: string) { return database().db.select().from(s.searchCalls).where(eq(s.searchCalls.runId, runId)).all().map(row => row.payload as import('./domain').SearchCall); }
+export function listCalls(runId: string, venueId?: string) {
+  const { sqlite }=database();
+  const rows=(venueId===undefined
+    ? sqlite.prepare('SELECT payload FROM search_calls WHERE run_id=?').all(runId)
+    : sqlite.prepare("SELECT payload FROM search_calls WHERE run_id=? AND json_extract(payload,'$.venueId')=?").all(runId,venueId)) as {payload:string}[];
+  return rows.map(row=>JSON.parse(row.payload) as import('./domain').SearchCall);
+}
 export function vote(judgmentId: string, session: string, value: number) { database().db.insert(s.feedback).values({ judgmentId, session, vote: value, at: now() }).onConflictDoUpdate({ target: [s.feedback.judgmentId, s.feedback.session], set: { vote: value, at: now() } }).run(); }
 export function statistics() {
   const { sqlite } = database();

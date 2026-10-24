@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -127,4 +127,16 @@ it('清单中的失效链接会恢复为有完整结果的示例', () => {
   initializeSampleReports(path);
   expect(sampleReports()).toHaveLength(4);
   expect(sampleReports().some(r => r.shareId === 'share-hangzhou')).toBe(true);
+});
+it('数据库重连后跳过未变化示例包的 JSON 和 zod 全量校验',()=>{
+  const {path}=setup();initializeSampleReports(path);const serialized=readFileSync(path,'utf8');
+  database().sqlite.close();delete(globalThis as {tripproofDB?:unknown}).tripproofDB;
+  const parse=vi.spyOn(JSON,'parse');
+  try{expect(initializeSampleReports(path)).toEqual({imported:0,featured:4});expect(parse.mock.calls.some(([text])=>text===serialized)).toBe(false);}finally{parse.mockRestore();}
+});
+it('校验标记存在但数据库报告丢失时仍重新读取并补入',()=>{
+  const {path}=setup();initializeSampleReports(path);
+  database().sqlite.prepare('DELETE FROM runs WHERE id=?').run('hangzhou-run');
+  expect(initializeSampleReports(path)).toEqual({imported:0,featured:4});
+  expect(tripState(getSharedTrip('share-hangzhou')!,{completedOnly:true}).result).not.toBeNull();
 });

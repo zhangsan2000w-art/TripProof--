@@ -1,11 +1,11 @@
 import { NextRequest } from 'next/server';
-import { getRun, getTrip, readEvents } from '@/lib/store';
+import { getRunProgress, getTrip, readEvents } from '@/lib/store';
 import { failure, session } from '@/lib/http';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
-    const { id } = await context.params, run = getRun(id); getTrip(run.tripId, session(req).owner);
+    const { id } = await context.params, run = getRunProgress(id); getTrip(run.tripId, session(req).owner);
     let after = Number(req.headers.get('last-event-id') || req.nextUrl.searchParams.get('after') || 0);
     if (!Number.isFinite(after) || after < 0) after = 0;
     const encoder = new TextEncoder(); let timer: ReturnType<typeof setInterval> | undefined;
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
           try {
             const events = readEvents(id, after);
             for (const event of events) { controller.enqueue(encoder.encode(`id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`)); after = event.id; }
-            if (['completed', 'failed', 'waiting_user', 'cancelled'].includes(getRun(id).status)) { close(); return; }
+            if (['completed', 'failed', 'waiting_user', 'cancelled'].includes(getRunProgress(id).status)) { close(); return; }
             controller.enqueue(encoder.encode(': keepalive\n\n'));
           } catch { close(); }
         };

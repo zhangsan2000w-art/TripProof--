@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { getSharedTrip, tripState } from './store';
-import { recalculateReport } from './report';
+import { cachedReport } from './report';
 import { itineraryInsights, tripVerdict } from './presentation';
 import { dateForDay } from './dates';
 import { sampleManifestPath } from './sample-manifest';
@@ -17,7 +17,7 @@ export function sampleReports(): SampleReport[] {
     const trip = getSharedTrip(shareId);
     const state = trip && tripState(trip, { completedOnly: true });
     if (!trip || !state?.result) return [];
-    const result = recalculateReport(trip, state.result), insights = itineraryInsights(trip, result.judgments, result.dossiers);
+    const result = cachedReport(trip, state.result), insights = itineraryInsights(trip, result.judgments, result.dossiers);
     const verdict = tripVerdict(trip, result.judgments, result.dossiers, insights);
     return [{ shareId, title: trip.title, city: trip.destinationCity, startDate: trip.startDate, days: new Set(trip.items.map(i => i.day)).size, stops: trip.items.length, counts: insights.counts, finding: verdict.headline, tone: verdict.tone === 'bad' ? 'bad' as const : verdict.tone === 'good' ? 'good' as const : 'muted' as const }];
   });

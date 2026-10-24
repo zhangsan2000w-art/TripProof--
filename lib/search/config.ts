@@ -1,10 +1,10 @@
-import { deepseekSetting } from './settings';
+import { deepseekSetting, searchSetting } from './settings';
 
 export function searchProviders() {
   return {
-    yuanbao: process.env.WSA_AUTH_MODE === 'tencent'
+    yuanbao: searchSetting('WSA_SEARCH_ENABLED') !== '0' && (searchSetting('WSA_AUTH_MODE') === 'tencent'
       ? Boolean(process.env.TENCENTCLOUD_SECRET_ID && process.env.TENCENTCLOUD_SECRET_KEY)
-      : Boolean(process.env.WSA_API_KEY),
+      : Boolean(searchSetting('WSA_API_KEY')?.trim())),
     deepseek: Boolean(deepseekSetting('DEEPSEEK_API_KEY')?.trim()) && deepseekSetting('DEEPSEEK_SEARCH_ENABLED') !== '0',
   };
 }

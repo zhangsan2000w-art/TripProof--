@@ -32,6 +32,7 @@ function connect() {
   for (const name of ['venues', 'search_calls', 'evidence', 'facts', 'judgments', 'ripples', 'suggestions']) {
     sqlite.exec(`CREATE TABLE IF NOT EXISTS ${name} (id TEXT NOT NULL, run_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(run_id,id))`);
   }
+  sqlite.exec("CREATE INDEX IF NOT EXISTS search_calls_venue ON search_calls(run_id,json_extract(payload,'$.venueId'))");
   return { sqlite, db: drizzle(sqlite, { schema }) };
 }
 const globalDB = globalThis as unknown as { tripproofDB?: ReturnType<typeof connect> };

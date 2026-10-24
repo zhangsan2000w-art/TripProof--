@@ -20,3 +20,20 @@ it('解析缓存不把旧链接的可用状态带到新调查',async()=>{llm.cal
 it('完整网页哈希变化，即使选取片段相同也不能复用旧解析',async()=>{llm.call.mockResolvedValue(output());const body=quote+'甲'.repeat(15000),a={...evidence(),content:body},b={...a,pageSha256:'hash-2',content:body.slice(0,8000)+'乙'+body.slice(8001)};expect(readingText(a)).toBe(readingText(b));await extractFacts('v','测试馆','杭州',['2026-10-25'],[a]);await extractFacts('v','测试馆','杭州',['2026-10-25'],[b]);expect(structured).toHaveBeenCalledTimes(2);});
 it('即使命中缓存也不能接受伪造引文或数字',async()=>{const raw=output();raw.facts[0].quote='每天00:00—24:00开放';llm.call.mockResolvedValue(raw);const first=await extractFacts('v','测试馆','杭州',[],[evidence()]);const second=await extractFacts('v','测试馆','杭州',[],[evidence('two')]);expect(first.facts).toHaveLength(0);expect(second.facts).toHaveLength(0);expect(structured).toHaveBeenCalledTimes(1);});
 it('不同分馆的规则不能共用缓存',async()=>{llm.call.mockResolvedValue(output());await extractFacts('v','测试馆东馆','杭州',[],[evidence()]);await extractFacts('v2','测试馆西馆','杭州',[],[evidence()]);expect(structured).toHaveBeenCalledTimes(2);});
+it('补查的证据包复用已经读过的页面，只把新增页交给模型',async()=>{
+  llm.call.mockResolvedValueOnce(output());await extractFacts('v','测试馆','杭州',[],[evidence('old')]);
+  const extra={...evidence('extra'),url:'https://example.gov.cn/visit-new',finalUrl:null,pageSha256:'new-page'};
+  const fresh=output();fresh.facts[0].evidenceId='source-1';llm.call.mockResolvedValueOnce(fresh);
+  const combined=await extractFacts('v','测试馆','杭州',[],[evidence('remapped'),extra]);
+  const sent=JSON.parse(llm.call.mock.calls[1][3][0].text);
+  expect(sent.evidence).toHaveLength(1);expect(sent.evidence[0].url).toBe(extra.url);
+  expect(combined.facts.map(f=>f.evidenceId).sort()).toEqual(['extra','remapped']);
+  await extractFacts('v','测试馆','杭州',[],[extra]);expect(structured).toHaveBeenCalledTimes(2);
+});
+it('不同城市的新增页解析不能借命中缓存的旧页混入正确城市',async()=>{
+  llm.call.mockResolvedValueOnce(output());await extractFacts('v','测试馆','杭州',[],[evidence('old')]);
+  const extra={...evidence('extra'),url:'https://example.gov.cn/another-city',pageSha256:'other-city'};
+  const fresh={...output(),city:'苏州'};fresh.facts[0].evidenceId='source-0';llm.call.mockResolvedValueOnce(fresh);
+  const result=await extractFacts('v','测试馆','杭州',[],[evidence('current'),extra]);
+  expect(result.facts.map(f=>f.evidenceId)).toEqual(['current']);
+});

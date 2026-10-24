@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import { refreshReportLinks, reportFeedbackIds } from '../lib/report';
+import { cachedReport, refreshReportLinks, reportFeedbackIds } from '../lib/report';
+import * as rules from '../lib/judge';
 import * as evidenceTools from '../lib/evidence';
 import { emptyResult, type Evidence, type Trip } from '../lib/domain';
 import { judgeItem } from '../lib/judge';
@@ -21,6 +22,17 @@ it('打印时失效链接同时降级行程、替代场馆及公告，保留存�
   expect(refreshed.announcement?.verdict).toBe('unknown');
   expect(stored.announcement.verdict).toBe('confirmed');
   expect(stored.dossiers[0].facts[0].linkStatus).toBe('ok');
+});
+it('未变化报告命中重算缓存，行程、证据变化及跨日都会失效，返回值互不污染',()=>{
+  const t:Trip={...trip(),id:crypto.randomUUID(),shareId:'s',createdAt:'',updatedAt:'',revision:1},stored=emptyResult();
+  const judge=vi.spyOn(rules,'judgeTrip');vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-24T01:00:00Z'));
+  try{
+    const first=cachedReport(t,stored);first.limitations.push('only-this-reader');
+    expect(cachedReport(structuredClone(t),structuredClone(stored)).limitations).not.toContain('only-this-reader');expect(judge).toHaveBeenCalledTimes(1);
+    cachedReport({...t,startDate:'2026-10-28'},stored);expect(judge).toHaveBeenCalledTimes(2);
+    cachedReport({...t,startDate:'2026-10-28'},{...stored,limitations:['changed']});expect(judge).toHaveBeenCalledTimes(3);
+    vi.setSystemTime(new Date('2026-10-25T01:00:00Z'));cachedReport({...t,startDate:'2026-10-28'},{...stored,limitations:['changed']});expect(judge).toHaveBeenCalledTimes(4);
+  }finally{vi.useRealTimers();judge.mockRestore();}
 });
 
 it('链接重查后仍可反馈当前判定，同时拒绝不属于本报告的编号',async()=>{

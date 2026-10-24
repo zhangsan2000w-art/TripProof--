@@ -5,9 +5,13 @@ import type { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { AppError } from '../errors';
 
+const apiKey = z.string().trim().max(512).regex(/^[\x21-\x7e]*$/).optional();
 export const deepseekSettingsSchema = z.object({
-  DEEPSEEK_API_KEY: z.string().trim().max(512).regex(/^[\x21-\x7e]*$/).optional(),
+  DEEPSEEK_API_KEY: apiKey,
   DEEPSEEK_SEARCH_ENABLED: z.enum(['0', '1']).optional(),
+  WSA_API_KEY: apiKey,
+  WSA_AUTH_MODE: z.literal('api-key').optional(),
+  WSA_SEARCH_ENABLED: z.enum(['0', '1']).optional(),
 }).strict();
 type Settings = z.infer<typeof deepseekSettingsSchema>;
 export const localSettingsEnabled = () => process.env.LOCAL_SETTINGS_ENABLED !== '0'
@@ -18,21 +22,26 @@ const settingsPath = () => resolve(dirname(resolve(/* turbopackIgnore: true */ p
 function readSettings(): Settings {
   if (!localSettingsEnabled() || !existsSync(settingsPath())) return {};
   try { return deepseekSettingsSchema.parse(JSON.parse(readFileSync(settingsPath(), 'utf8'))); }
-  catch { throw new AppError('LOCAL_SETTINGS_INVALID', '本机 DeepSeek 配置无法读取，请检查本机配置文件。', 503); }
+  catch { throw new AppError('LOCAL_SETTINGS_INVALID', '本机搜索配置无法读取，请检查本机配置文件。', 503); }
 }
 // The web process and investigation worker read the same file on every request.
-export function deepseekSetting(name: keyof Settings) {
+export function searchSetting(name: keyof Settings) {
   const values = readSettings();
   return Object.hasOwn(values, name) ? values[name] : process.env[name];
 }
-export function saveDeepseekSettings(input: unknown) {
+export const deepseekSetting = searchSetting;
+export function saveSearchSettings(input: unknown) {
   if (!localSettingsEnabled()) throw new AppError('NOT_FOUND', '此入口仅在本机测试模式开放。', 404);
-  const values = { ...readSettings(), ...deepseekSettingsSchema.parse(input) }, target = settingsPath();
+  const parsed = deepseekSettingsSchema.parse(input);
+  // A local service key must not accidentally use legacy SecretId/SecretKey auth.
+  if (Object.hasOwn(parsed, 'WSA_API_KEY')) parsed.WSA_AUTH_MODE = 'api-key';
+  const values = { ...readSettings(), ...parsed }, target = settingsPath();
   mkdirSync(dirname(target), { recursive: true });
   const temporary = `${target}.${randomUUID()}.tmp`;
   writeFileSync(temporary, JSON.stringify(values), { mode: 0o600 });
   renameSync(temporary, target);
 }
+export const saveDeepseekSettings = saveSearchSettings;
 export function requireLocalSettings(req: NextRequest, mutation = false) {
   const url = new URL(req.url), host = req.headers.get('host') || '';
   if (!localSettingsEnabled() || !/^(?:localhost|127\.0\.0\.1)(?::\d+)?$/.test(host))

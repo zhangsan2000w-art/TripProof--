@@ -121,7 +121,18 @@ function requestPage(url: URL, address: { address: string; family: number }, tim
 }
 export type PageCheck = { linkStatus: LinkStatus; checkedAt: string; finalUrl: string; text: string; sha256: string | null };
 export function cachedLinkCheck(url:string) { return cacheGet<PageCheck>(`page:v2:${createHash('sha256').update(url).digest('hex')}`); }
+const pageReads=new WeakMap<AbortSignal,Map<string,Promise<PageCheck>>>();
 export async function checkLink(url: string, force = false): Promise<PageCheck> {
+  assertRunning();
+  const signal=runSignal();
+  if(!signal)return readPage(url,force);
+  const pending=pageReads.get(signal)??new Map<string,Promise<PageCheck>>();pageReads.set(signal,pending);
+  const key=`${Number(force)}:${url}`,shared=pending.get(key);
+  if(shared){recordMetric('page_shared',0);return shared;}
+  const request=readPage(url,force);pending.set(key,request);
+  try{return await request;}finally{pending.delete(key);}
+}
+async function readPage(url: string, force: boolean): Promise<PageCheck> {
   assertRunning();
   const key = `page:v2:${createHash('sha256').update(url).digest('hex')}`;
   const cached = !force && cacheGet<PageCheck>(key);

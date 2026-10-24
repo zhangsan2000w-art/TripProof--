@@ -99,6 +99,9 @@ q { quotes: "“" "”"; }
 .local-settings-page { padding-top: 40px; padding-bottom: 64px; min-height: 70vh; }
 .local-settings-form { max-width: 600px; margin: 0 auto; display: grid; gap: 22px; letter-spacing: 0; }
 .local-settings-form h1 { font-size: 26px; margin-top: 4px; }
+.local-provider-settings { display: grid; gap: 16px; padding: 22px 0; border-top: 1px solid var(--line); min-width: 0; }
+.local-provider-settings > header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.local-provider-settings h2 { font-size: 18px; }
 .local-key-field { display: grid; gap: 8px; }
 .local-key-field > label { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
 .local-key-field > label span, .local-settings-note { color: var(--muted); font-size: 12px; }

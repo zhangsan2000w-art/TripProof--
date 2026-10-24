@@ -4,6 +4,19 @@ import { mapLimit } from './concurrency';
 import { judgeItem, judgeTrip } from './judge';
 import { rippleEffects, suggestions } from './impact';
 import { supportedDossierFacts } from './facts';
+import { createHash } from 'node:crypto';
+import { today } from './dates';
+
+const reports=new Map<string,{key:string;result:RunResult}>();
+export function cachedReport(trip:Trip,stored:RunResult):RunResult {
+  const key=createHash('sha256').update(JSON.stringify([today(),trip,stored])).digest('hex');
+  const cached=reports.get(trip.id);
+  if(cached?.key===key)return structuredClone(cached.result);
+  const result=recalculateReport(trip,stored);
+  reports.delete(trip.id);reports.set(trip.id,{key,result:structuredClone(result)});
+  if(reports.size>24)reports.delete(reports.keys().next().value!);
+  return result;
+}
 
 export function recalculateReport(trip: Trip, stored: RunResult): RunResult {
   const result = structuredClone(stored);

@@ -7,6 +7,7 @@ import type { Evidence, SearchCall, SearchParams } from '../domain';
 import { load } from 'cheerio';
 import { assertRunning, runSignal, recordMetric } from '../run-control';
 import { searchGate as gate, type SearchBudget } from './shared';
+import { searchSetting } from './settings';
 
 type RawResponse = { Pages?: (string | Record<string, unknown>)[]; RequestId?: string; Version?: string; Msg?: string; Error?: { Code: string; Message?: string } };
 type Cached = { call: SearchCall; pages: Evidence[] };
@@ -31,16 +32,17 @@ export function normalizePage(raw: string | Record<string, unknown>, searchCallI
       searchOrigins: [{ provider: 'yuanbao', searchCallId, retrievedAt, passage }] };
   } catch { return null; }
 }
-async function rawSearch(body: Record<string, unknown>): Promise<RawResponse> {
-  if (process.env.WSA_AUTH_MODE === 'tencent') {
+export async function requestYuanbaoSearch(body: Record<string, unknown>): Promise<RawResponse> {
+  if (searchSetting('WSA_AUTH_MODE') === 'tencent') {
     const Client = tencentcloud.wsa.v20250508.Client;
     const client = new Client({ credential: { secretId: process.env.TENCENTCLOUD_SECRET_ID || '', secretKey: process.env.TENCENTCLOUD_SECRET_KEY || '' }, region: '', profile: { httpProfile: { endpoint: 'wsa.tencentcloudapi.com', reqTimeout: 8 } } });
     return await client.SearchPro(body as { Query: string }) as RawResponse;
   }
-  if (!process.env.WSA_API_KEY) throw new AppError('SEARCH_NOT_CONFIGURED', '尚未配置元宝搜索密钥。', 503);
+  const key = searchSetting('WSA_API_KEY')?.trim();
+  if (!key) throw new AppError('SEARCH_NOT_CONFIGURED', '尚未配置元宝搜索密钥。', 503);
   const timeoutSignal = AbortSignal.timeout(8000), parentSignal = runSignal();
-  const res = await fetch('https://api.wsa.cloud.tencent.com/SearchPro', { method: 'POST', headers: { Authorization: `Bearer ${process.env.WSA_API_KEY}`, 'Content-Type': 'application/json; charset=utf-8' }, body: JSON.stringify(body), signal: parentSignal ? AbortSignal.any([timeoutSignal,parentSignal]) : timeoutSignal });
-  if (!res.ok) throw new AppError(`SEARCH_HTTP_${res.status}`, '元宝搜索暂时无法访问。', 502);
+  const res = await fetch('https://api.wsa.cloud.tencent.com/SearchPro', { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json; charset=utf-8' }, body: JSON.stringify(body), signal: parentSignal ? AbortSignal.any([timeoutSignal,parentSignal]) : timeoutSignal });
+  if (!res.ok) throw new AppError(`SEARCH_HTTP_${res.status}`, [401,403].includes(res.status) ? '元宝搜索鉴权失败，请核对服务 API Key 和权限。' : '元宝搜索暂时无法访问。', 502);
   const json = await res.json();
   return json.Response ?? json;
 }
@@ -70,7 +72,7 @@ export async function searchPro(runId: string, venueId: string, params: SearchPa
       assertRunning();
       if (venueCalls.used >= Math.min(5, venueCalls.limit ?? 5)) throw new AppError('VENUE_BUDGET', '该场馆已达到五次搜索上限。');
       reserveSearch(runId,venueId);reserved=true;venueCalls.used++;
-      const response = await rawSearch(body);
+      const response = await requestYuanbaoSearch(body);
       assertRunning();
       call.requestId = response.RequestId ?? null; call.version = response.Version ?? null; call.msg = response.Msg || null;
       if (response.Error) { call.errorCode = response.Error.Code; }

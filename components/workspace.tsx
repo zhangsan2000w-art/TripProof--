@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowRight, RefreshCw, Share2, FileDown, Search, LoaderCircl
 import type { TripState, Item, Judgment, Operation, RunEvent, RunResult, Trip, SearchCall, Alternative, GuideSummary } from '@/lib/domain';
 import { GuideCard, GuideViewer } from './guide-view';
 import { api } from '@/lib/client';
+import { applyRunEvent } from '@/lib/live-state';
 import { dateForDay, weekdayLabel, localTime } from '@/lib/dates';
 import { prepareImages } from '@/lib/images-client';
 import { Header } from './brand';
@@ -25,9 +26,21 @@ export function Workspace({ tripId }: { tripId: string }) {
   const [alternativeModal, setAlternativeModal] = useState(false), [guide, setGuide] = useState<GuideSummary | null>(null), [viewing, setViewing] = useState<number | null>(null);
   const [timeModal, setTimeModal] = useState(false), [planStart, setPlanStart] = useState(''), [planEnd, setPlanEnd] = useState('');
   const noticeUpload = useRef<HTMLInputElement>(null);
+  const eventHistory=useRef<RunEvent[]>([]),lastEventAt=useRef(Date.now()),refreshing=useRef<Promise<void>|null>(null);
   const refresh = useCallback(async () => {
-    try { const next = await api<TripState>(`/api/trips/${tripId}`); setState(next); setSelected(current => next.trip.items.some(i => i.id === current) ? current : next.trip.items[0]?.id ?? ''); setEvents(current => { const map = new Map([...current, ...next.events].map(e => [e.id, e])); return [...map.values()].sort((a, b) => a.id - b.id); }); }
-    catch (error) { setError((error as Error).message); }
+    if(refreshing.current)return refreshing.current;
+    const task=(async()=>{
+      try {
+        const after=eventHistory.current.at(-1)?.id??0;
+        const next=await api<TripState>(`/api/trips/${tripId}?after=${after}`);
+        const snapshotAfter=Math.max(after,...next.events.map(e=>e.id));
+        setState(eventHistory.current.filter(e=>e.id>snapshotAfter).reduce(applyRunEvent,next));
+        setSelected(current=>next.trip.items.some(i=>i.id===current)?current:next.trip.items[0]?.id??'');
+        eventHistory.current=[...new Map([...eventHistory.current,...next.events].map(e=>[e.id,e])).values()].sort((a,b)=>a.id-b.id);
+        setEvents(eventHistory.current);
+      }catch(error){setError((error as Error).message);}
+    })();
+    refreshing.current=task;try{await task;}finally{refreshing.current=null;}
   }, [tripId]);
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {
@@ -38,20 +51,26 @@ export function Workspace({ tripId }: { tripId: string }) {
   // The submitted guide never changes, so it is read once.
   useEffect(() => { if (shareId) api<{ guide: GuideSummary | null }>(`/api/reports/${shareId}/guide`).then(r => setGuide(r.guide), () => setGuide(null)); }, [shareId]);
   const busy = state?.run?.status === 'queued' || state?.run?.status === 'running';
-  useEffect(() => { if (!busy) return; const interval = setInterval(refresh, 2200); return () => clearInterval(interval); }, [busy, refresh]);
+  useEffect(() => { if (!busy) return; const interval=setInterval(()=>{if(Date.now()-lastEventAt.current>30000)void refresh();},15000);return()=>clearInterval(interval); }, [busy, refresh]);
   useEffect(() => {
     if (!state?.run || !['queued', 'running'].includes(state.run.status)) return;
     const after=Math.max(0,...events.filter(e=>e.runId===state.run!.id).map(e=>e.id),...state.events.map(e=>e.id));
     const source = new EventSource(`/api/runs/${state.run.id}/events?after=${after}`);
+    let fallback:ReturnType<typeof setTimeout>|undefined;
+    lastEventAt.current=Date.now();
     source.onmessage = event => {
       try {
         const data: RunEvent = JSON.parse(event.data);
-        setEvents(current => current.some(e => e.id === data.id) ? current : [...current, data]);
+        lastEventAt.current=Date.now();clearTimeout(fallback);fallback=undefined;
+        if(!eventHistory.current.some(e=>e.id===data.id)){
+          eventHistory.current=[...eventHistory.current,data];setEvents(eventHistory.current);
+          setState(current=>current?applyRunEvent(current,data):current);
+        }
         if (['done','error','waiting_user','cancelled'].includes(data.type)) { source.close(); refresh(); }
       } catch { /* The next persisted snapshot restores any missing event. */ }
     };
-    source.onerror = () => { refresh(); };
-    return () => source.close();
+    source.onerror = () => { fallback??=setTimeout(()=>{fallback=undefined;void refresh();},5000); };
+    return () => {source.close();clearTimeout(fallback);};
   }, [state?.run?.id, state?.run?.status, refresh]);
   const activeEvents = events.filter(e => e.runId === state?.run?.id);
   const judgments = state?.result?.judgments ?? [];

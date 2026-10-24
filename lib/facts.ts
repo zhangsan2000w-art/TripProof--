@@ -193,7 +193,13 @@ export async function extractFacts(venueId: string, name: string, city: string, 
   const cacheKey=`facts:v2:${createHash('sha256').update(JSON.stringify({input,snapshots:usable.map(e=>e.pageSha256||createHash('sha256').update(e.content+e.passage).digest('hex')),model:process.env.LLM_FACT_MODEL||'gpt-6.1-sol'})).digest('hex')}`;
   const cached=cacheGet<z.infer<typeof factOutputSchema>>(cacheKey);
   const began=Date.now();
-  const raw = cached ?? await structured('fact', factOutputSchema, `你是旅行规则的证据读取器。只提取指定城市、指定场馆、对应分馆的明确事实，不能做日期计算、推理补全或决策。提取来源自身的适用日期与常规规则，不按某次查询日期改写规则。
+  type Output=z.infer<typeof factOutputSchema>;
+  const sourceKeys=usable.map((e,index)=>`facts:source:v1:${createHash('sha256').update(JSON.stringify({venue:name,city,source:{...input.evidence[index],id:'source-0'},snapshot:e.pageSha256||createHash('sha256').update(e.content+e.passage).digest('hex'),model:process.env.LLM_FACT_MODEL||'gpt-6.1-sol'})).digest('hex')}`);
+  const parts=cached?[]:sourceKeys.map(key=>cacheGet<Output>(key));
+  const missing=input.evidence.filter((_,index)=>!parts[index]);
+  let raw=cached;
+  if(!raw){
+  const fresh = missing.length ? await structured('fact', factOutputSchema, `你是旅行规则的证据读取器。只提取指定城市、指定场馆、对应分馆的明确事实，不能做日期计算、推理补全或决策。提取来源自身的适用日期与常规规则，不按某次查询日期改写规则。
 不同来源分别提取，不合并。每个事实 quote 必须来自该 evidenceId 的 text 或 passage 的逐字连续子串，最多80个字符，并包含支持 payload 的完整关键规则（尤其数字、时间）。不要引用标题拼凑事实。
 时间一律HH:mm；全年常规时间的季节范围是01-01到12-31，季节性范围只抄原文。一个hours事实只包含一段季节规则，避免引文过长。weekly_open 只提取明确开放的星期（例如“周二至周日”），不能从“周一闭馆”反推其他天一定开放；原文写“每日/每天/全年无休/周一至周日/全天开放”时提取 weekdays 为0-6的 weekly_open；“全年开放时间”只是全年适用的营业时间，同一句写了闭馆日时不能提取为每天开放；weekly_closure 单独提取。
 weekdays 用0=周日到6=周六。常规闭馆规则里的“法定节假日除外”才设置exceptStatutoryHolidays=true。
@@ -202,9 +208,22 @@ validFrom/validTo 只填明确的生效/失效日期，不是文章发表日期�
 预约required仅表示普通个人游客的规则；不得声称有库存或用户已完成预约。“个人免预约/无需预约”必须提取required=false；团队规则以及老人、儿童、军人等优待人群例外均不提取为普通个人预约规则。只有明确要求才能填true，建议预约不代表强制要求。advanceDays 仅抄明确的提前天数，不能模糊推断含当日的滚动窗口。一个来源的同一预约规则尽量用一条完整事实表示。
 天气必须明确包含目标日期和城市；没有匹配日期不要提取。降雨不表示关闭。transport_duration 仅提取明确起终点和数值的路线参考。
 不属于目标分馆返回 other_branch；无法确定则 unclear，不要为了返回结果标exact。攻略原文和用户截图不能独立当成官方来源。
-officialDomain 只在证据正文/站点身份能证明该域名由场馆所属机构运营时填写。officialIdentityQuote复制正文中的主办单位、版权或官方身份声明；不能仅凭.org.cn后缀判断。不能猜官网。`, [{ type: 'input_text', text: JSON.stringify(input) }], 7000);
-  if (!cached) cacheSet(cacheKey,raw);
-  recordMetric('fact_read',Date.now()-began,{cacheHit:!!cached,sources:usable.length});
+officialDomain 只在证据正文/站点身份能证明该域名由场馆所属机构运营时填写。officialIdentityQuote复制正文中的主办单位、版权或官方身份声明；不能仅凭.org.cn后缀判断。不能猜官网。`, [{ type: 'input_text', text: JSON.stringify({...input,evidence:missing}) }], 7000) : null;
+  const outputs:Output[]=parts.flatMap((part,index)=>part?[{...part,officialEvidenceId:part.officialEvidenceId?`source-${index}`:null,facts:part.facts.map(f=>({...f,evidenceId:`source-${index}`}))}]:[]);
+  if(fresh){
+    outputs.push(fresh);
+    for(let index=0;index<usable.length;index++)if(!parts[index]){
+      const sourceId=`source-${index}`,official=fresh.officialEvidenceId===sourceId;
+      cacheSet(sourceKeys[index],{...fresh,facts:fresh.facts.filter(f=>f.evidenceId===sourceId).map(f=>({...f,evidenceId:'source-0'})),officialDomain:official?fresh.officialDomain:null,officialEvidenceId:official?'source-0':null,officialIdentityQuote:official?fresh.officialIdentityQuote:null});
+    }
+  }
+  const requestedCity=city.replace(/市$/,'').trim();
+  const compatible=outputs.filter(part=>{const actual=part.city.replace(/市$/,'').trim();return !actual||!requestedCity||actual.includes(requestedCity)||requestedCity.includes(actual);});
+  const identity=compatible.find(part=>part.officialDomain&&part.officialEvidenceId);
+  raw={...(compatible[0]??outputs[0]),facts:compatible.flatMap(part=>part.facts),ambiguities:[...new Set([...outputs.flatMap(part=>part.ambiguities),...(compatible.length<outputs.length?['部分新增资料指向其他城市，未采用这些事实。']:[])])],officialDomain:identity?.officialDomain??null,officialEvidenceId:identity?.officialEvidenceId??null,officialIdentityQuote:identity?.officialIdentityQuote??null};
+  cacheSet(cacheKey,raw);
+  }
+  recordMetric('fact_read',Date.now()-began,{cacheHit:!!cached||missing.length===0,sources:usable.length,uncachedSources:cached?0:missing.length});
   const output=structuredClone(raw), remap=(sourceId:string|null)=>sourceId===null?null:usable[Number(sourceId.replace(/^source-/,''))]?.id ?? sourceId;
   output.officialEvidenceId=remap(output.officialEvidenceId);
   output.facts=output.facts.map(f=>({...f,evidenceId:remap(f.evidenceId)!}));

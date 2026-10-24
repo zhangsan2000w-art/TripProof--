@@ -7,6 +7,7 @@ import { GET, POST } from '../app/api/local-settings/route';
 import { POST as check } from '../app/api/local-settings/check/route';
 import { deepseekSetting } from '../lib/search/settings';
 import { searchProviders } from '../lib/search/config';
+import { requestYuanbaoSearch } from '../lib/search/yuanbao';
 
 const folder = mkdtempSync(join(tmpdir(), 'tripproof-local-deepseek-'));
 const file = join(folder, 'deepseek-settings.json'), url = 'http://127.0.0.1:4317/api/local-settings';
@@ -32,7 +33,7 @@ it('拒绝非本机 Host 和跨站状态读取', async () => {
 it('只返回状态，不泄露 Key 或片段；保存不改变原有元宝配置', async () => {
   const response = await POST(request({ DEEPSEEK_API_KEY: 'local-secret-for-contract', DEEPSEEK_SEARCH_ENABLED: '1' }));
   expect(response.status).toBe(200); const text = await response.text(); expect(text).not.toContain('secret'); expect(text).not.toContain('API_KEY');
-  expect(JSON.parse(text)).toEqual({ configured: true, enabled: true, yuanbao: true });
+  expect(JSON.parse(text)).toEqual({ configured: true, enabled: true, yuanbao: true, yuanbaoConfigured: true, yuanbaoEnabled: true, yuanbaoAuthMode: 'api-key' });
   expect((await GET(request())).headers.get('Cache-Control')).toBe('no-store');
   expect(process.env.WSA_API_KEY).toBe('original-yuanbao-key'); expect(process.env.DEEPSEEK_API_KEY).toBe('environment-key');
   expect(deepseekSetting('DEEPSEEK_API_KEY')).toBe('local-secret-for-contract');
@@ -46,8 +47,60 @@ it('移除 Key 不会意外回退到环境变量的旧 Key', async () => {
   const response = await POST(request({ DEEPSEEK_API_KEY: '' })); expect(await response.json()).toMatchObject({ configured: false });
   expect(deepseekSetting('DEEPSEEK_API_KEY')).toBe(''); expect(searchProviders().deepseek).toBe(false);
 });
-it.each([{ OPENAI_BASE_URL: 'https://evil.example' }, { WSA_API_KEY: 'replacement' }, { DEEPSEEK_API_KEY: 'key\ninjected' }])('拒绝其他配置及控制字符 %j', async input => {
+it.each([{ OPENAI_BASE_URL: 'https://evil.example' }, { WSA_AUTH_MODE: 'tencent' }, { WSA_API_KEY: 'key\ninjected' }, { DEEPSEEK_API_KEY: 'key\ninjected' }])('拒绝其他配置及控制字符 %j', async input => {
   expect((await POST(request(input))).status).toBe(400);
+});
+it('保存元宝服务 Key 后实际请求使用本机值，不改变 DeepSeek 或环境变量，也不回显密钥', async () => {
+  const response = await POST(request({ WSA_API_KEY: 'local-yuanbao-secret', WSA_SEARCH_ENABLED: '1' }));
+  const text = await response.text(); expect(response.status).toBe(200); expect(text).not.toContain('secret'); expect(text).not.toContain('API_KEY');
+  expect(JSON.parse(text)).toMatchObject({ yuanbao: true, yuanbaoConfigured: true, yuanbaoAuthMode: 'api-key' });
+  expect(deepseekSetting('DEEPSEEK_API_KEY')).toBe('environment-key'); expect(process.env.WSA_API_KEY).toBe('original-yuanbao-key');
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ Response: { Pages: [], RequestId: 'service-request' } }))); vi.stubGlobal('fetch', fetch);
+  await requestYuanbaoSearch({ Query: 'rules' });
+  expect(fetch.mock.calls).toHaveLength(1);
+  const [url, options] = (fetch.mock.calls as unknown as [string, RequestInit][])[0];
+  expect(url).toBe('https://api.wsa.cloud.tencent.com/SearchPro');
+  expect(new Headers(options.headers).get('Authorization')).toBe('Bearer local-yuanbao-secret');
+});
+it('两路密钥独立保存；元宝启停和删除不回退旧 Key', async () => {
+  await POST(request({ WSA_API_KEY: 'yuanbao-local' })); await POST(request({ DEEPSEEK_API_KEY: 'deepseek-local' }));
+  await POST(request({ WSA_SEARCH_ENABLED: '0' }));
+  expect(searchProviders()).toEqual({ yuanbao: false, deepseek: true });
+  expect(await (await GET(request())).json()).toMatchObject({ yuanbaoConfigured: true, yuanbaoEnabled: false });
+  await POST(request({ WSA_SEARCH_ENABLED: '1' })); expect(searchProviders().yuanbao).toBe(true);
+  await POST(request({ WSA_API_KEY: '' })); expect(searchProviders().yuanbao).toBe(false);
+  expect(deepseekSetting('WSA_API_KEY')).toBe(''); expect(deepseekSetting('DEEPSEEK_API_KEY')).toBe('deepseek-local');
+  await expect(requestYuanbaoSearch({ Query: 'rules' })).rejects.toMatchObject({ code: 'SEARCH_NOT_CONFIGURED' });
+});
+it('无本机覆盖时保留旧云鉴权；填服务 Key 后使用 API 鉴权，移除也不退回旧云密钥', async () => {
+  vi.stubEnv('WSA_AUTH_MODE', 'tencent'); vi.stubEnv('TENCENTCLOUD_SECRET_ID', 'legacy-id'); vi.stubEnv('TENCENTCLOUD_SECRET_KEY', 'legacy-secret');
+  expect(await (await GET(request())).json()).toMatchObject({ yuanbao: true, yuanbaoAuthMode: 'tencent' });
+  await POST(request({ WSA_API_KEY: 'service-key' })); expect(deepseekSetting('WSA_AUTH_MODE')).toBe('api-key');
+  expect(await (await GET(request())).json()).toMatchObject({ yuanbaoAuthMode: 'api-key' });
+  await POST(request({ WSA_API_KEY: '' })); expect(searchProviders().yuanbao).toBe(false);
+});
+it('元宝验证使用同一鉴权适配器，返回解析后的条数而非原始响应', async () => {
+  await POST(request({ WSA_API_KEY: 'probe-yuanbao' }));
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ Response: { Pages: [{ url: 'https://example.com/rule', title: '规则', content: '原文' }, { url: 'javascript:alert(1)' }], RequestId: 'yuanbao-probe' } }))); vi.stubGlobal('fetch', fetch);
+  const response = await check(request({ provider: 'yuanbao' })); expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ resultCount: 1, bodyCount: 1, requestId: 'yuanbao-probe' });
+  const [, options] = (fetch.mock.calls as unknown as [string, RequestInit][])[0];
+  expect(new Headers(options.headers).get('Authorization')).toBe('Bearer probe-yuanbao');
+});
+it.each([401, 403, 500])('元宝验证 HTTP %s 不报告为成功', async status => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status })));
+  const response = await check(request({ provider: 'yuanbao' })); expect(response.status).toBe(502);
+  expect(await response.json()).toMatchObject({ code: `SEARCH_HTTP_${status}` });
+});
+it.each([{ Error: { Code: 'AuthFailure', Message: 'sensitive-upstream-error' } }, {}, { Pages: [], Msg: 'hit black query' }])('元宝错误响应与异常结构不报告成功 %j', async raw => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ Response: raw }))));
+  const response = await check(request({ provider: 'yuanbao' })); expect(response.status).toBe(502);
+  expect(await response.text()).not.toContain('sensitive-upstream-error');
+});
+it('元宝空结果明确返回零；未知提供方不发网络请求', async () => {
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ Pages: [] }))); vi.stubGlobal('fetch', fetch);
+  expect(await (await check(request({ provider: 'yuanbao' }))).json()).toMatchObject({ resultCount: 0, bodyCount: 0 });
+  fetch.mockClear(); expect((await check(request({ provider: 'unknown' }))).status).toBe(400); expect(fetch).not.toHaveBeenCalled();
 });
 it('验证接口使用已保存的 Key，并返回真实解析出的结果数', async () => {
   await POST(request({ DEEPSEEK_API_KEY: 'probe-local-key' }));
