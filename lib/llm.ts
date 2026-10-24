@@ -5,11 +5,12 @@ import { AppError } from './errors';
 import { draftSchema, type Draft } from './domain';
 import { prepareDraft } from './itinerary';
 import { assertRunning, runSignal, recordMetric } from './run-control';
+import { searchProviders } from './search/config';
 
 export function configuration() {
   return {
     llm: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_BASE_URL),
-    search: process.env.WSA_AUTH_MODE === 'tencent' ? Boolean(process.env.TENCENTCLOUD_SECRET_ID && process.env.TENCENTCLOUD_SECRET_KEY) : Boolean(process.env.WSA_API_KEY),
+    search: Object.values(searchProviders()).some(Boolean),
     model: process.env.LLM_EXTRACT_MODEL || 'gpt-6.1-sol',
   };
 }

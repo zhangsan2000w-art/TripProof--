@@ -4,7 +4,8 @@ import { emit, finishRun, getRun, getTrip, id, listCalls } from './store';
 import { dateForDay, daysUntil, now } from './dates';
 import type { Alternative, Dossier, Evidence, Item, Run, RunResult, Trip, SearchParams } from './domain';
 import { emptyResult, kinds } from './domain';
-import { searchPro } from './search/yuanbao';
+import { searchSources } from './search';
+import { providerCount } from './search/config';
 import { verifyEvidence } from './evidence';
 import { corroboratesClaim } from './announcements';
 import { extractAdvisories, extractFacts, extractWeatherFacts, hasRiskWords, supportedDossierFacts } from './facts';
@@ -32,11 +33,11 @@ export async function investigateVenue(runId: string, item: Item, city: string, 
   const unresolved = unresolvedTarget(item);
   if (unresolved) return { venue: { id: vid, key, canonicalName: item.placeName, city, officialDomain: null, officialEvidenceId: null, investigationDates: dates }, facts: [], evidence: [], calls: [], searchedScope: [], limitations: [unresolved.message], createdAt: now() };
   const dossier: Dossier = { venue: { id: vid, key, canonicalName: item.placeName, city, officialDomain: null, officialEvidenceId: null, investigationDates: dates }, facts: [], evidence: [], calls: [], searchedScope: [], limitations: [], createdAt: now() };
-  const venueCalls = { used: 0 }, pages: Evidence[] = [];
+  const venueCalls = { used: 0, limit: cap }, pages: Evidence[] = [];
   if (cap < 1) { dossier.limitations.push('本次搜索额度已分给其他地点，这一站未检索；可以单独重新检查。'); return dossier; }
   const search = async (params: SearchParams) => {
     dossier.searchedScope.push(`${params.query}${params.site ? ` · 站点 ${params.site}` : ''}${params.freshness ? ` · 时间范围 ${params.freshness}` : ''}`);
-    try { const r = await searchPro(runId, vid, params, venueCalls); pages.push(...r.pages); return r.pages; }
+    try { const r = await searchSources(runId, vid, params, venueCalls); pages.push(...r.pages); dossier.limitations.push(...r.limitations); return r.pages; }
     catch (error) { dossier.limitations.push(error instanceof AppError ? error.message : '该次搜索未完成。'); return []; }
   };
   const transport = item.kind === 'transport', mainName = searchName(item.placeName);
@@ -49,7 +50,7 @@ export async function investigateVenue(runId: string, item: Item, city: string, 
     { query: `${qcity} ${qname} ${item.kind === 'transport' ? '停运 运营调整' : '临时闭馆'} ${month}`, freshness: 'm2', industry: 'news' },
     ...(['museum', 'scenic', 'show'].includes(item.kind) ? [{ query: `${qcity} ${qname} 预约 提前 放票`, ...(domain ? { site: domain } : {}) }] : []),
     ...(domain ? [{ query: `${qname} 闭馆 公告`, site: domain, freshness: 'm3' }] : []),
-  ].slice(0, Math.max(0, cap - 1));
+  ].slice(0, Math.max(0, Math.floor((cap - venueCalls.used) / providerCount())));
   await Promise.all(followups.map(search));
   // Verify a bounded set of URLs, rather than opening every search hit.
   const selected = selectVenueSources(pages, item.placeName, city, domain, 8, transport);
@@ -83,8 +84,8 @@ export async function investigateWeather(runId: string, city: string, date: stri
   const query = `${redact(city)} ${date} 天气 预报`;
   d.searchedScope.push(`${query} · 最近2天`);
   try {
-    const response = await searchPro(runId, vid, { query, freshness: 'd2' }, { used: 0 });
-    d.calls.push(response.call);
+    const response = await searchSources(runId, vid, { query, freshness: 'd2' }, { used: 0 });
+    d.calls.push(...response.calls); d.limitations.push(...response.limitations);
     d.evidence = await mapLimit(response.pages.slice(0, 3), 3, e => links.run(() => verifyEvidence(e, city,true)));
     for (const e of d.evidence) emit(runId, 'evidence', e);
     d.facts = await models.run(() => extractWeatherFacts(vid, city, date, d.evidence));
@@ -106,7 +107,7 @@ export async function searchRisk(runId: string, city: string, dates: string[]): 
   const calls = { used: 0 }, pages: Evidence[] = [];
   await Promise.all(queries.map(async params => {
     d.searchedScope.push(`${params.query} · 最近7天`);
-    try { pages.push(...(await searchPro(runId, vid, params, calls)).pages); }
+    try { const response = await searchSources(runId, vid, params, calls); pages.push(...response.pages); d.limitations.push(...response.limitations); }
     catch (error) { d.limitations.push(error instanceof AppError ? error.message : '预警搜索未完成。'); }
   }));
   const place = city.replace(/市$/, '');
@@ -167,8 +168,8 @@ export async function investigateAlternatives(run: Run, trip: Trip, cap=2): Prom
   if (!target) throw new AppError('ITEM_NOT_FOUND', '找不到需要替代的行程项。', 404);
   const city = target.city || trip.destinationCity, vid = venueId(`alternatives:${city}:${target.placeName}`);
   emit(run.id, 'plan', { message: `寻找「${target.placeName}」的同城替代场馆，并独立核查。` });
-  const response = await searchPro(run.id, vid, { query: `${redact(city)} ${target.kind === 'museum' ? '博物馆' : target.kind === 'show' ? '演出场馆' : '景点'} ${target.kind === 'museum' ? '参观' : '游览'} 开放` }, { used: 0 });
-  result.dossiers.push({ venue: { id: vid, key: `alternatives:${city}:${target.placeName}`, canonicalName: `${target.placeName}的替代场馆检索`, city, officialDomain: null, officialEvidenceId: null, investigationDates: [dateForDay(trip.startDate, target.day)] }, facts: [], evidence: [], calls: [response.call], searchedScope: [response.call.query], limitations: [], createdAt: now() });
+  const response = await searchSources(run.id, vid, { query: `${redact(city)} ${target.kind === 'museum' ? '博物馆' : target.kind === 'show' ? '演出场馆' : '景点'} ${target.kind === 'museum' ? '参观' : '游览'} 开放` }, { used: 0 });
+  result.dossiers.push({ venue: { id: vid, key: `alternatives:${city}:${target.placeName}`, canonicalName: `${target.placeName}的替代场馆检索`, city, officialDomain: null, officialEvidenceId: null, investigationDates: [dateForDay(trip.startDate, target.day)] }, facts: [], evidence: [], calls: response.calls, searchedScope: [...new Set(response.calls.map(call => call.query))], limitations: response.limitations, createdAt: now() });
   const candidatesSchema = z.object({ candidates: z.array(z.object({ name: z.string(), city:z.string(),kind:z.enum(kinds), reason: z.string(), sourceIndex: z.number().int().min(0) })).max(2) });
   const candidates = await models.run(() => structured('fact', candidatesSchema, '从搜索资料中选择最多两个同城同类的真实替代场馆，不能选择原场馆，不要推断距离、可达性或可预约库存。sourceIndex必须是搜索结果索引。没有合适候选返回空数组。', [{ type: 'input_text', text: JSON.stringify({ city, original: target.placeName, kind: target.kind, sources: response.pages.map((p, index) => ({ index, title: p.title, text: p.passage, url: p.url })) }) }], 2000));
   const unique=[...new Map(candidates.candidates.map(c=>[c.name,c])).values()];

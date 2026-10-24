@@ -78,17 +78,21 @@ export const factOutputSchema = z.object({
 });
 export type Fact = ExtractedFact & { id: string; venueId: string; quoteVerified: boolean; tier: 1 | 2 | 3 | 4; domain: string; publishedAt: string | null; retrievedAt: string; linkStatus: LinkStatus };
 export type LinkStatus = 'ok' | 'browser_only' | 'broken';
+export type SearchProvider = 'yuanbao' | 'deepseek';
+export type SearchOrigin = { provider: SearchProvider; searchCallId: string; retrievedAt: string; passage: string };
 export type Evidence = {
   id: string; searchCallId: string; url: string; finalUrl: string | null; title: string; site: string;
   publishedAt: string | null; retrievedAt: string; passage: string; content: string;
   score: number | null; authorityLevel: number | null; tier: 1 | 2 | 3 | 4;
   linkStatus: LinkStatus; linkCheckedAt: string | null; pageSha256: string | null;
+  provider?: SearchProvider; providerScore?: number | null; providerAuthority?: number | null; searchOrigins?: SearchOrigin[];
 };
 export type SearchParams = { query: string; site?: string; freshness?: string; mode?: number; cnt?: number; industry?: string };
 export type SearchCall = {
   id: string; venueId: string; query: string; params: SearchParams; requestId: string | null;
   version: string | null; msg: string | null; errorCode: string | null; resultCount: number;
   latencyMs: number; calledAt: string; cacheHit: boolean; cachedFrom: string | null;
+  provider?: SearchProvider; sentQuery?: string;
 };
 export const checkTypes = ['open_on_date', 'hours_fit', 'reservation_rule', 'availability', 'arrival_fit', 'service_hours', 'weather', 'safety', 'guide_claim', 'connection_fit'] as const;
 export type CheckType = typeof checkTypes[number];

@@ -3,7 +3,7 @@ import type { AgentCheckpoint, AgentFocus } from './agent-types';
 import type { Dossier, Item, Run, RunResult, Trip, Judgment, SearchParams } from './domain';
 import { now, dateForDay } from './dates';
 import { emit, getRun, listCalls } from './store';
-import { searchPro } from './search/yuanbao';
+import { searchSources } from './search';
 import { verifyEvidence } from './evidence';
 import { extractFacts, supportedDossierFacts } from './facts';
 import { searchName, selectVenueSources } from './source-selection';
@@ -97,7 +97,7 @@ export async function investigateTargets(ctx:ToolContext,ids:string[],focus:Agen
       const saved=listCalls(ctx.run.id).find(c=>c.venueId===d.venue.id&&c.query===params.query);
       if(saved&&(saved.errorCode||saved.resultCount===0||(ctx.state.sources[d.venue.key]??[]).some(e=>e.searchCallId===saved.id)))return;
       if(!d.searchedScope.includes(params.query))d.searchedScope.push(params.query);ctx.persist();
-      try{const response=await searchPro(ctx.run.id,d.venue.id,params,counter);assertRunning();const pool=ctx.state.sources[d.venue.key]??[];ctx.state.sources[d.venue.key]=[...new Map([...pool,...response.pages].map(e=>[e.url,e])).values()];}
+      try{const response=await searchSources(ctx.run.id,d.venue.id,params,counter);assertRunning();d.limitations.push(...response.limitations);const pool=ctx.state.sources[d.venue.key]??[];ctx.state.sources[d.venue.key]=[...new Map([...pool,...response.pages].map(e=>[e.url,e])).values()];}
       catch(error){assertRunning();d.limitations.push(errorMessage(error));}
       finally{d.calls=listCalls(ctx.run.id).filter(c=>c.venueId===d.venue.id);ctx.persist();}
     }));

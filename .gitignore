@@ -4,6 +4,8 @@ out/
 output/
 dist/
 .data/
+deepseek-settings.json
+deepseek-settings.json.*.tmp
 .env*
 !.env.example
 docs/key.md

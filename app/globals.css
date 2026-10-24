@@ -95,6 +95,26 @@ q { quotes: "“" "”"; }
 .header-inner { max-width: 1120px; height: 62px; margin: 0 auto; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .header-right { display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--muted); }
 .header-status { display: inline-flex; align-items: center; gap: 8px; }
+.local-settings-link { white-space: nowrap; }
+.local-settings-page { padding-top: 40px; padding-bottom: 64px; min-height: 70vh; }
+.local-settings-form { max-width: 600px; margin: 0 auto; display: grid; gap: 22px; letter-spacing: 0; }
+.local-settings-form h1 { font-size: 26px; margin-top: 4px; }
+.local-key-field { display: grid; gap: 8px; }
+.local-key-field > label { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.local-key-field > label span, .local-settings-note { color: var(--muted); font-size: 12px; }
+.local-key-field > div { display: flex; align-items: center; gap: 8px; }
+.local-key-field input { flex: 1; width: 100%; min-width: 0; height: 44px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); padding: 0 12px; }
+.local-key-field .icon-button { flex-shrink: 0; }
+.local-search-toggle { display: flex; align-items: center; gap: 8px; }
+.local-search-toggle input { width: 16px; height: 16px; accent-color: var(--brand); }
+.local-settings-state > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.local-settings-state dt { color: var(--muted); }
+.local-settings-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.local-settings-message { color: var(--green-ink); }
+.local-settings-check { padding: 12px 14px; background: var(--green-soft); color: var(--green-ink); border-radius: 8px; }
+.local-settings-check strong { display: flex; align-items: center; gap: 8px; }
+.local-settings-check code { display: block; margin-top: 6px; overflow-wrap: anywhere; font-size: 11px; }
+.local-settings-check.is-empty { background: var(--amber-soft); color: var(--amber-ink); }
 .brand { display: inline-flex; align-items: center; gap: 10px; }
 .brand-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--brand); color: #fff; }
 .brand-name { font-size: 18px; font-weight: 500; letter-spacing: -.02em; } .brand-name b { font-weight: 700; }

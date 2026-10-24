@@ -6,23 +6,10 @@ import { now } from '../dates';
 import type { Evidence, SearchCall, SearchParams } from '../domain';
 import { load } from 'cheerio';
 import { assertRunning, runSignal, recordMetric } from '../run-control';
+import { searchGate as gate, type SearchBudget } from './shared';
 
 type RawResponse = { Pages?: (string | Record<string, unknown>)[]; RequestId?: string; Version?: string; Msg?: string; Error?: { Code: string; Message?: string } };
 type Cached = { call: SearchCall; pages: Evidence[] };
-class Gate {
-  active = 0; waiting: (() => void)[] = []; lastStarts: number[] = [];
-  async enter() {
-    if (this.active >= 4) await new Promise<void>(resolve => this.waiting.push(resolve));
-    else this.active++;
-    while (true) {
-      const t = Date.now(); this.lastStarts = this.lastStarts.filter(n => t - n < 1000);
-      if (this.lastStarts.length < 4) { this.lastStarts.push(t); break; }
-      await new Promise(resolve => setTimeout(resolve, 1000 - (t - this.lastStarts[0]) + 10));
-    }
-  }
-  leave() { const next=this.waiting.shift();if(next)next();else this.active--; }
-}
-const gate = new Gate();
 const text = (raw: unknown) => load(String(raw ?? '')).text().replace(/\s+/g, ' ').trim();
 function publishedAt(value: unknown): string | null {
   const match = String(value ?? '').match(/(20\d{2})[年/.-](\d{1,2})[月/.-](\d{1,2})/);
@@ -36,10 +23,12 @@ export function normalizePage(raw: string | Record<string, unknown>, searchCallI
     const url = new URL(String(p.url ?? ''));
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
     url.hash = '';
-    return { id: id(), searchCallId, url: url.toString(), finalUrl: null, title: text(p.title), site: url.hostname,
-      publishedAt: publishedAt(p.date), retrievedAt: now(), passage: text(p.passage).slice(0, 18000), content: text(p.content).slice(0, 26000),
+    const retrievedAt = now(), passage = text(p.passage).slice(0, 18000);
+    return { id: id(), searchCallId, provider: 'yuanbao', url: url.toString(), finalUrl: null, title: text(p.title), site: url.hostname,
+      publishedAt: publishedAt(p.date), retrievedAt, passage, content: text(p.content).slice(0, 26000),
       score: typeof p.score === 'number' ? p.score : null, authorityLevel: typeof p.authority_level === 'number' ? p.authority_level : null,
-      tier: 4, linkStatus: 'broken', linkCheckedAt: null, pageSha256: null };
+      tier: 4, linkStatus: 'broken', linkCheckedAt: null, pageSha256: null,
+      searchOrigins: [{ provider: 'yuanbao', searchCallId, retrievedAt, passage }] };
   } catch { return null; }
 }
 async function rawSearch(body: Record<string, unknown>): Promise<RawResponse> {
@@ -55,7 +44,7 @@ async function rawSearch(body: Record<string, unknown>): Promise<RawResponse> {
   const json = await res.json();
   return json.Response ?? json;
 }
-export async function searchPro(runId: string, venueId: string, params: SearchParams, venueCalls: { used: number }): Promise<Cached> {
+export async function searchPro(runId: string, venueId: string, params: SearchParams, venueCalls: SearchBudget): Promise<Cached> {
   assertRunning();
   if (getRun(runId).status === 'cancelled') throw new AppError('RUN_CANCELLED','调查已停止。',409);
   const tier = process.env.WSA_TIER || cacheGet<string>('search:tier') || 'unknown';
@@ -65,20 +54,22 @@ export async function searchPro(runId: string, venueId: string, params: SearchPa
   // Dynamic notices and weather are searched in this run; only regular rules reuse search results.
   const cached = !params.freshness && cacheGet<Cached>(key);
   if (cached) {
-    const call: SearchCall = { ...cached.call, id: id(), venueId, calledAt: now(), cacheHit: true, cachedFrom: cached.call.id };
-    const pages = cached.pages.map(p => ({ ...p, id: id(), searchCallId: call.id }));
+    const call: SearchCall = { ...cached.call, id: id(), venueId, provider: 'yuanbao', calledAt: now(), cacheHit: true, cachedFrom: cached.call.id };
+    const pages = cached.pages.map(p => ({ ...p, id: id(), searchCallId: call.id, searchOrigins: p.searchOrigins?.map(origin => ({ ...origin, searchCallId: call.id })) }));
     saveCall(runId, call); emit(runId, 'search', call);
     return { call, pages };
   }
   let last: SearchCall | null = null;
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (venueCalls.used >= 5) throw new AppError('VENUE_BUDGET', '该场馆已达到五次搜索上限。');
+    if (venueCalls.used >= Math.min(5, venueCalls.limit ?? 5)) throw new AppError('VENUE_BUDGET', '该场馆已达到五次搜索上限。');
     const queued=Date.now();await gate.enter();recordMetric('search_queue',Date.now()-queued,{venueId});
     const start = Date.now();
-    const call: SearchCall = { id: id(), venueId, query: params.query, params: { query: params.query, ...(params.site ? {site: params.site} : {}), ...(params.freshness ? {freshness: params.freshness} : {}), ...(body.Mode !== undefined ? {mode: Number(body.Mode)} : {}), ...(body.Cnt !== undefined ? {cnt: Number(body.Cnt)} : {}), ...(body.Industry ? {industry: String(body.Industry)} : {}) }, requestId: null, version: null, msg: null, errorCode: null, resultCount: 0, latencyMs: 0, calledAt: now(), cacheHit: false, cachedFrom: null };
+    const call: SearchCall = { id: id(), venueId, provider: 'yuanbao', query: params.query, params: { query: params.query, ...(params.site ? {site: params.site} : {}), ...(params.freshness ? {freshness: params.freshness} : {}), ...(body.Mode !== undefined ? {mode: Number(body.Mode)} : {}), ...(body.Cnt !== undefined ? {cnt: Number(body.Cnt)} : {}), ...(body.Industry ? {industry: String(body.Industry)} : {}) }, requestId: null, version: null, msg: null, errorCode: null, resultCount: 0, latencyMs: 0, calledAt: now(), cacheHit: false, cachedFrom: null };
     let reserved=false;
     try {
-      assertRunning();reserveSearch(runId,venueId);reserved=true;venueCalls.used++;
+      assertRunning();
+      if (venueCalls.used >= Math.min(5, venueCalls.limit ?? 5)) throw new AppError('VENUE_BUDGET', '该场馆已达到五次搜索上限。');
+      reserveSearch(runId,venueId);reserved=true;venueCalls.used++;
       const response = await rawSearch(body);
       assertRunning();
       call.requestId = response.RequestId ?? null; call.version = response.Version ?? null; call.msg = response.Msg || null;

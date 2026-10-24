@@ -18,7 +18,7 @@ export function SourceCard({ evidence, quotes = [], overruled = false }: { evide
     <div className="source-heading"><span className={`tier tier-${evidence.tier}`}>{tierLabels[evidence.tier]}</span>{overruled && <span className="overruled-label">未采纳</span>}<span className="source-domain">{evidence.site}</span></div>
     <a className="source-title" href={href} target="_blank" rel="noopener noreferrer">{evidence.title || evidence.site}<ExternalLink size={12}/></a>
     {quotes.map((q, i) => <blockquote key={i}>{q}</blockquote>)}
-    <div className="source-meta"><span className={`link-state link-${evidence.linkStatus}`}><Link2 size={11}/>{evidence.linkStatus === 'ok' ? '链接已验证' : evidence.linkStatus === 'browser_only' ? '需在浏览器打开核实' : '链接检查未通过'}</span><span>发布 {evidence.publishedAt || '未注明'}</span><span>检索 {localTime(evidence.retrievedAt, true)}</span></div>
+    <div className="source-meta"><span className={`link-state link-${evidence.linkStatus}`}><Link2 size={11}/>{evidence.linkStatus === 'ok' ? '链接已验证' : evidence.linkStatus === 'browser_only' ? '需在浏览器打开核实' : '链接检查未通过'}</span><span>发布 {evidence.publishedAt || '未注明'}</span><span>检索 {localTime(evidence.retrievedAt, true)}</span>{(evidence.provider === 'deepseek' || evidence.searchOrigins?.some(origin => origin.provider === 'deepseek')) && <span>{evidence.searchOrigins?.some(origin => origin.provider === 'yuanbao') ? '元宝 + DeepSeek' : 'DeepSeek Search'}</span>}</div>
   </article>;
 }
 export function BasisTag({ rule }: { rule: RuleHighlight }) {
