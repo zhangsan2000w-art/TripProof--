@@ -8,6 +8,7 @@ import { load } from 'cheerio';
 import { assertRunning, runSignal, recordMetric } from '../run-control';
 import { searchGate as gate, type SearchBudget } from './shared';
 import { searchSetting } from './settings';
+import { hasAvailableYuanbaoKey, markYuanbaoKeyFailure, nextYuanbaoKey, yuanbaoKeyFailure } from './yuanbao-keys';
 
 type RawResponse = { Pages?: (string | Record<string, unknown>)[]; RequestId?: string; Version?: string; Msg?: string; Error?: { Code: string; Message?: string } };
 type Cached = { call: SearchCall; pages: Evidence[] };
@@ -32,24 +33,37 @@ export function normalizePage(raw: string | Record<string, unknown>, searchCallI
       searchOrigins: [{ provider: 'yuanbao', searchCallId, retrievedAt, passage }] };
   } catch { return null; }
 }
-export async function requestYuanbaoSearch(body: Record<string, unknown>): Promise<RawResponse> {
+export async function requestYuanbaoSearch(body: Record<string, unknown>, beforeRequest?: (sentBody: Record<string, unknown>) => void): Promise<RawResponse> {
+  assertRunning();
   if (searchSetting('WSA_AUTH_MODE') === 'tencent') {
     const Client = tencentcloud.wsa.v20250508.Client;
     const client = new Client({ credential: { secretId: process.env.TENCENTCLOUD_SECRET_ID || '', secretKey: process.env.TENCENTCLOUD_SECRET_KEY || '' }, region: '', profile: { httpProfile: { endpoint: 'wsa.tencentcloudapi.com', reqTimeout: 8 } } });
+    beforeRequest?.(body);
     return await client.SearchPro(body as { Query: string }) as RawResponse;
   }
-  const key = searchSetting('WSA_API_KEY')?.trim();
-  if (!key) throw new AppError('SEARCH_NOT_CONFIGURED', '尚未配置元宝搜索密钥。', 503);
+  const credential = nextYuanbaoKey(), sentBody = { ...body };
+  if (credential.tier === 'lite') { delete sentBody.Mode; delete sentBody.Cnt; delete sentBody.Industry; }
   const timeoutSignal = AbortSignal.timeout(8000), parentSignal = runSignal();
-  const res = await fetch('https://api.wsa.cloud.tencent.com/SearchPro', { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json; charset=utf-8' }, body: JSON.stringify(body), signal: parentSignal ? AbortSignal.any([timeoutSignal,parentSignal]) : timeoutSignal });
-  if (!res.ok) throw new AppError(`SEARCH_HTTP_${res.status}`, [401,403].includes(res.status) ? '元宝搜索鉴权失败，请核对服务 API Key 和权限。' : '元宝搜索暂时无法访问。', 502);
+  // One adapter invocation sends at most one request; the caller reserves each attempt.
+  beforeRequest?.(sentBody);
+  const res = await fetch('https://api.wsa.cloud.tencent.com/SearchPro', { method: 'POST', headers: { Authorization: `Bearer ${credential.key}`, 'Content-Type': 'application/json; charset=utf-8' }, body: JSON.stringify(sentBody), signal: parentSignal ? AbortSignal.any([timeoutSignal,parentSignal]) : timeoutSignal });
+  if (!res.ok) {
+    markYuanbaoKeyFailure(credential, `SEARCH_HTTP_${res.status}`, res.headers.get('retry-after'));
+    throw new AppError(`SEARCH_HTTP_${res.status}`, [401,403].includes(res.status) ? '元宝搜索鉴权失败，请核对服务 API Key 和权限。' : res.status === 402 ? '元宝搜索额度不足。' : '元宝搜索暂时无法访问。', 502);
+  }
   const json = await res.json();
-  return json.Response ?? json;
+  const response: RawResponse = json.Response ?? json;
+  if (response.Error) {
+    markYuanbaoKeyFailure(credential, response.Error.Code, res.headers.get('retry-after'));
+    if (response.Error.Code === 'InvalidParameter' && ('Mode' in sentBody || 'Cnt' in sentBody || 'Industry' in sentBody)) credential.tier = 'lite';
+  } else if (response.Version) credential.tier = response.Version;
+  return response;
 }
 export async function searchPro(runId: string, venueId: string, params: SearchParams, venueCalls: SearchBudget): Promise<Cached> {
   assertRunning();
   if (getRun(runId).status === 'cancelled') throw new AppError('RUN_CANCELLED','调查已停止。',409);
-  const tier = process.env.WSA_TIER || cacheGet<string>('search:tier') || 'unknown';
+  const tencent = searchSetting('WSA_AUTH_MODE') === 'tencent';
+  const tier = process.env.WSA_TIER || (tencent ? cacheGet<string>('search:tier') : null) || 'unknown';
   const body: Record<string, unknown> = { Query: params.query, ...(params.site ? { Site: params.site } : {}), ...(params.freshness ? { Freshness: params.freshness } : {}) };
   if (tier !== 'lite') { if (params.mode !== undefined) body.Mode = params.mode; if (params.cnt) body.Cnt = params.cnt; if (params.industry) body.Industry = params.industry; }
   const key = `search:${createHash('sha256').update(JSON.stringify(body)).digest('hex')}`;
@@ -71,9 +85,13 @@ export async function searchPro(runId: string, venueId: string, params: SearchPa
     try {
       assertRunning();
       if (venueCalls.used >= Math.min(5, venueCalls.limit ?? 5)) throw new AppError('VENUE_BUDGET', '该场馆已达到五次搜索上限。');
-      reserveSearch(runId,venueId);reserved=true;venueCalls.used++;
       phase='request';
-      const response = await requestYuanbaoSearch(body);
+      let sentBody = body;
+      const response = await requestYuanbaoSearch(body, actualBody => {
+        sentBody = actualBody;
+        reserveSearch(runId,venueId); reserved=true; venueCalls.used++;
+        call.params = { query: params.query, ...(params.site ? {site: params.site} : {}), ...(params.freshness ? {freshness: params.freshness} : {}), ...(actualBody.Mode !== undefined ? {mode: Number(actualBody.Mode)} : {}), ...(actualBody.Cnt !== undefined ? {cnt: Number(actualBody.Cnt)} : {}), ...(actualBody.Industry ? {industry: String(actualBody.Industry)} : {}) };
+      });
       assertRunning();
       phase='normalize';
       call.requestId = response.RequestId ?? null; call.version = response.Version ?? null; call.msg = response.Msg || null;
@@ -82,12 +100,16 @@ export async function searchPro(runId: string, venueId: string, params: SearchPa
       call.resultCount = pages.length; call.latencyMs = Date.now() - start;
       recordMetric('search',call.latencyMs,{venueId,cacheHit:false});
       phase='persist';saveCall(runId, call); emit(runId, 'search', call); last = call;
-      if (call.version) cacheSet('search:tier', call.version, 24 * 3600_000);
+      if (tencent && call.version) cacheSet('search:tier', call.version, 24 * 3600_000);
       if (!response.Error) { const result = { call, pages }; cacheSet(key, result); return result; }
-      if (response.Error.Code === 'InvalidParameter' && ('Mode' in body || 'Cnt' in body || 'Industry' in body) && attempt === 0) {
-        delete body.Mode; delete body.Cnt; delete body.Industry; cacheSet('search:tier', 'lite', 24 * 3600_000); continue;
+      if (response.Error.Code === 'InvalidParameter' && ('Mode' in sentBody || 'Cnt' in sentBody || 'Industry' in sentBody) && attempt < 2) {
+        if (tencent) { delete body.Mode; delete body.Cnt; delete body.Industry; cacheSet('search:tier', 'lite', 24 * 3600_000); }
+        continue;
       }
-      if (response.Error.Code === 'RequestLimitExceeded' && attempt < 2) { await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 250 : 1000)); continue; }
+      if (attempt < 2 && (tencent ? response.Error.Code === 'RequestLimitExceeded' : yuanbaoKeyFailure(response.Error.Code) && hasAvailableYuanbaoKey())) {
+        if (tencent) await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 250 : 1000));
+        continue;
+      }
       throw new AppError(response.Error.Code, '搜索服务返回错误，相关检查保持尚无法确认。', 502);
     } catch (error) {
       const raw=error as {name?:unknown;code?:unknown;cause?:{code?:unknown}};
@@ -101,8 +123,10 @@ export async function searchPro(runId: string, venueId: string, params: SearchPa
       }
       if(!(error instanceof AppError)&&!runSignal()?.aborted)console.error('[SearchPro failure]',{phase,name,code,cause});
       assertRunning();
-      if(network&&attempt<2&&venueCalls.used<Math.min(5,venueCalls.limit??5)){
-        await new Promise(resolve=>setTimeout(resolve,250*(attempt+1)));
+      const failover = !tencent && error instanceof AppError && yuanbaoKeyFailure(error.code) && hasAvailableYuanbaoKey();
+      const transientHttp = error instanceof AppError && /^SEARCH_HTTP_(?:408|5\d\d)$/.test(error.code);
+      if((network||failover||transientHttp)&&attempt<2&&venueCalls.used<Math.min(5,venueCalls.limit??5)){
+        if (!failover) await new Promise(resolve=>setTimeout(resolve,250*(attempt+1)));
         continue;
       }
       if(!(error instanceof AppError))throw new AppError(call.errorCode||'SEARCH_FAILED',network?'搜索连接暂时失败，已保存本次调用；未取得的证据保持未知。':'搜索处理未完成，已记录失败阶段；未取得的证据保持未知。',502);

@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, beforeEach, expect, it, vi } from 'vitest';
+import { beforeAll, afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +10,8 @@ import { trip } from './fixtures';
 const folder=mkdtempSync(join(tmpdir(),'tripproof-search-'));
 const response=(data:unknown)=>new Response(JSON.stringify({Response:data}),{headers:{'Content-Type':'application/json'}});
 beforeAll(()=>{process.env.DATABASE_PATH=join(folder,'search.db');process.env.WSA_API_KEY='contract-test';process.env.WSA_TIER='standard';});
-beforeEach(()=>vi.unstubAllGlobals());
+beforeEach(()=>{vi.unstubAllGlobals();vi.stubEnv('LOCAL_SETTINGS_ENABLED','0');vi.stubEnv('WSA_API_KEYS','');vi.stubEnv('WSA_AUTH_MODE','api-key');vi.stubEnv('WSA_API_KEY',`contract-${crypto.randomUUID()}`);});
+afterEach(()=>vi.unstubAllEnvs());
 afterAll(()=>{vi.unstubAllGlobals();database().sqlite.close();delete (globalThis as {tripproofDB?:unknown}).tripproofDB;rmSync(folder,{recursive:true,force:true});});
 const run=()=>createRun(createTrip(trip(),'contract'));
 it('解析字符串Pages，拒绝无效URL',()=>{expect(normalizePage(JSON.stringify({url:'https://www.gov.cn/rule',title:'<b>规则</b>',passage:'周一闭馆'}),'c')?.title).toBe('规则');expect(normalizePage({url:'javascript:alert(1)'},'c')).toBe(null);});

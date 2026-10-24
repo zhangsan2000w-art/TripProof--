@@ -48,6 +48,7 @@ pnpm start
 | `SEARCH_CONCURRENCY`、`SEARCH_STARTS_PER_SECOND` | 两家搜索共用的在途 / 每秒启动上限，默认 4 / 4；在途并发硬上限为 4，可按配额调低 |
 | `WSA_AUTH_MODE` | `api-key` 或 `tencent` |
 | `WSA_API_KEY` | 元宝 API Key 鉴权 |
+| `WSA_API_KEYS` | 可选，多 Key 用逗号或换行分隔，最多 32 个、自动去重；非空时优先于单 Key |
 | `TENCENTCLOUD_SECRET_ID`、`TENCENTCLOUD_SECRET_KEY` | 腾讯云 AK/SK 鉴权；与 API Key 二选一 |
 | `WSA_TIER` | `standard`、`lite`；留空时识别返回版本并处理不支持的参数 |
 | `DEEPSEEK_API_KEY` | 可选的官方 DeepSeek Search Key，发送至 `api.deepseek.com`；不能填第三方中转的 LLM 密钥 |
@@ -75,7 +76,9 @@ pnpm start
 
 在 `.env.local` 填写 `DEEPSEEK_API_KEY` 并保持 `DEEPSEEK_SEARCH_ENABLED=1`，新检索会同时查询已配置的元宝和 DeepSeek。两路共用上述调用预算；一方失败不丢弃另一方有效结果，同一 URL 去重并保留两家的来源记录。资料继续按地点相关性、来源身份及可核验引文筛选，不直接比较两家不兼容的原始分数。近期天气和公告继续执行本轮检索，不以旧缓存冒充实时查询。
 
-本机使用 `pnpm dev` 时，顶部“怎么核对的”旁有“本机密钥”入口（`/settings`）。元宝 SearchPro 和 DeepSeek 分别提供 API Key 保存、替换、移除、启停和验证。元宝输入的是服务 API Key，不是 SecretId/SecretKey；未保存元宝本机覆盖时保留原有环境变量鉴权，保存服务 Key 后明确使用 `api-key` 模式。“验证接口”会对所选信源发起一次真实搜索并显示返回结果数，不代表整份行程已经核验。单独启动网页或 worker 时，也需设置 `HOSTNAME=127.0.0.1`，并使用相同的 `DATABASE_PATH`。
+本机使用 `pnpm dev` 时，顶部“怎么核对的”旁有“本机密钥”入口（`/settings`）。元宝 SearchPro 和 DeepSeek 分别提供 API Key 保存、替换、移除、启停和验证。元宝可填写多个服务 API Key，用英文逗号分隔或粘贴每行一个的列表，页面只显示已配置的数量；不是 SecretId/SecretKey。未保存元宝本机覆盖时保留原有环境变量鉴权，保存服务 Key 后明确使用 `api-key` 模式；移除后不会回退到环境变量里的旧 Key。“验证接口”会对所选信源发起一次真实搜索并显示返回结果数，不代表整份行程已经核验。单独启动网页或 worker 时，也需设置 `HOSTNAME=127.0.0.1`，并使用相同的 `DATABASE_PATH`。
+
+多 Key 按实际网络请求依次轮换，缓存命中不轮换。鉴权失败和额度不足的 Key 暂停 15 分钟，限流按 `Retry-After` 暂停（默认 30 秒，范围 1 秒至 5 分钟），期间选择其他可用 Key；全部不可用时明确报错。每次切换重试分别保存调用记录、消耗一次搜索预算，单次搜索最多尝试 3 次，仍遵守每场馆 5 次、每轮 40 次和最多 4 个并发请求。套餐降级按 Key 独立记忆。轮询及冷却状态由各服务进程维护，重启后重置；增加 Key 不会自动提高配置的总调用额度或并发上限。
 
 网页只返回是否配置，不回显 Key。通过页面保存的两路配置兼容保存在数据库旁的 `deepseek-settings.json`，优先于环境变量，网页与 worker 在后续调用时读取，无需重启；留空保存保留已有 Key，移除会覆盖环境变量中的旧 Key，元宝移除后也不会回退旧云密钥。两路配置独立保存；`WSA_SEARCH_ENABLED=0` 可停用元宝而保留密钥。该文件及临时文件由 Git 忽略，不进入报告或浏览器存储。公网部署请在服务端配置环境变量，不开放本机密钥页面。GPT 模型地址、模型名不受此入口影响。
 

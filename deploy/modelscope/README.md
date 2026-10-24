@@ -66,11 +66,14 @@ git push modelscope refs/remotes/origin/modelscope:refs/heads/master
 | `LLM_AGENT_MODEL` | 可选，默认沿用事实模型，选择下一步工具行动 |
 | `WSA_AUTH_MODE` | `api-key` |
 | `WSA_API_KEY` | 元宝搜索 API Key |
+| `WSA_API_KEYS` | 可选，多 Key 用逗号分隔（或换行），最多 32 个；非空时优先于 `WSA_API_KEY`，请求依次轮询 |
 | `WSA_TIER` | `standard` |
 | `SESSION_DAILY_LIMIT` | 建议试用先设 `3` |
 | `SESSION_MESSAGE_LIMIT` | 每浏览器每日对话上限，默认 `60` |
 | `SEARCH_DAILY_LIMIT` | 建议试用先设 `200` |
 | `SEARCH_TOTAL_LIMIT` | 按实际套餐余量设置 |
+
+多 Key 同样只填在密文变量中。重复 Key 自动去重；失效或额度不足的 Key 暂停 15 分钟，限流按 `Retry-After` 暂停（默认 30 秒，最多 5 分钟），使用其他可用 Key 重试。每次实际请求均计入预算，搜索上限和并发不因 Key 数量增加；全部不可用时报告失败。轮询与冷却状态在进程重启后重置。
 
 生成签名密钥：
 

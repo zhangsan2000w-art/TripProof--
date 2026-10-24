@@ -27,7 +27,7 @@ const ybPage = (url = 'https://www.shanghaimuseum.net/rules') => ({ url, title: 
 const run = () => { const value = createRun(createTrip(trip(), 'deepseek-test')); runs.push(value.id); return value; };
 beforeAll(() => { process.env.DATABASE_PATH = join(folder, 'test.db'); });
 beforeEach(() => {
-  vi.stubEnv('WSA_AUTH_MODE', 'api-key'); vi.stubEnv('WSA_API_KEY', 'yuanbao-test'); vi.stubEnv('WSA_TIER', 'standard');
+  vi.stubEnv('WSA_AUTH_MODE', 'api-key'); vi.stubEnv('WSA_API_KEY', `yuanbao-test-${crypto.randomUUID()}`); vi.stubEnv('WSA_API_KEYS', ''); vi.stubEnv('WSA_TIER', 'standard');
   vi.stubEnv('DEEPSEEK_API_KEY', 'deepseek-test'); vi.stubEnv('DEEPSEEK_SEARCH_ENABLED', '1');
 });
 afterEach(() => {
