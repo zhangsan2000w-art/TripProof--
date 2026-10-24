@@ -11,7 +11,10 @@ const context = await browser.newContext({ viewport: { width: 1440, height: 1050
 await unlockTestClient(context.request, base);
 const page = await context.newPage(), errors: string[] = [];
 page.on('pageerror', e => errors.push(e.message));
-page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+// A failed request is logged with its address, so the console line alone is not needed.
+page.on('console', m => { if (m.type() === 'error' && !m.text().startsWith('Failed to load resource')) errors.push(m.text()); });
+// The local key-settings link probes its endpoint and hides itself on 404 outside local test mode.
+page.on('response', r => { const path = new URL(r.url()).pathname; if (r.status() >= 400 && !(r.status() === 404 && path === '/api/local-settings')) errors.push(`${r.status()} ${r.request().method()} ${path}`); });
 const result: Record<string, unknown> = { checkedAt: new Date().toISOString(), realServices: true };
 try {
   await page.goto(base);
@@ -33,7 +36,8 @@ try {
     if (Date.now() - begin > 600000) throw new Error('UX investigation queue timeout');
     if (['queued', 'running'].includes(state.run?.status || '')) await new Promise(resolve => setTimeout(resolve, 2000));
   } while (['queued', 'running'].includes(state.run?.status || ''));
-  expect(state.run?.status).toBe('completed');
+  // The agent may finish, or save its results and ask for the missing arrival time.
+  expect(['completed', 'waiting_user']).toContain(state.run?.status);
   await page.reload();
   await page.getByRole('button', { name: '补充计划到达时间', exact: true }).click();
   await page.getByLabel('计划到达', { exact: true }).fill('16:30');
@@ -41,7 +45,7 @@ try {
   await page.getByRole('button', { name: '预览时段是否合适', exact: true }).click();
   await expect(page.getByRole('heading', { name: '先看变化，再应用', exact: true })).toBeVisible();
   await expect(page.locator('.preview-stats')).toContainText('需调整 0');
-  await expect(page.locator('.preview-stats')).toContainText('可前往');
+  await expect(page.locator('.preview-stats')).toContainText('时段符合 1');
   await expect(page.locator('.preview-list .plan-status')).not.toContainText('需调整');
   await expect(page.locator('.preview-list')).toContainText('16:30—18:00');
   await page.getByRole('button', { name: '应用修改', exact: true }).click();
@@ -68,9 +72,14 @@ try {
   await page.getByRole('button', { name: '第 1 天', exact: true }).click();
   expect(await page.locator('.report-day').count()).toBe(1);
   await page.getByRole('button', { name: '全部行程', exact: true }).click();
-  await page.locator('.outcome-filters button').filter({ hasText: /^需调整/ }).click();
-  await expect(page.getByText('这个分类下没有安排。', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '查看全部行程', exact: true }).click();
+  // Filters exist only for states that occur; filtering shows just those stops, then resets.
+  const all = await page.locator('.report-item').count();
+  await page.locator('.outcome-filters button').filter({ hasText: /^时段符合/ }).click();
+  const shown = page.locator('.report-item');
+  expect(await shown.count()).toBeGreaterThan(0); expect(await shown.count()).toBeLessThanOrEqual(all);
+  for (const status of await shown.locator('.plan-status').allInnerTexts()) expect(status).toContain('时段符合');
+  await page.getByRole('button', { name: '显示全部', exact: true }).click();
+  expect(await page.locator('.report-item').count()).toBe(all);
   result.dayAndStatusFilters = true;
   await page.evaluate(() => scrollTo(0,0)); await page.screenshot({ path: `${folder}/report-desktop.png` });
   await tower.screenshot({ path: `${folder}/leifeng-card.png` });

@@ -26,11 +26,27 @@ describe('多个独立来源交叉验证', () => {
     expect(view.rules.find(r => r.label === '营业时间')).toMatchObject({ value: '全天开放', basis: 'consensus' });
     expect(view.rules.some(r => r.label === '停止入场')).toBe(false);
   });
-  it('只有一个平台时保持待核实', () => expect(check([on(hours('00:00', '24:00', null), 3, 'baike.baidu.com', { quote: '全天开放' })], 'open_on_date').reasonCode).toBe('WEAK_EVIDENCE'));
-  it('普通网页需要三个独立站点一致', () => {
+  it('只有一个平台、没有相反说法时给出结论，标为单一来源', () => {
+    const fs = [on(hours('00:00', '24:00', null), 3, 'baike.baidu.com', { quote: '全天开放' })];
+    expect(check(fs, 'open_on_date')).toMatchObject({ verdict: 'confirmed', reasonCode: 'OPEN_BY_HOURS' });
+    const i = item({ kind: 'scenic', placeName: '西湖', start: null, end: null }), t = trip([i], { startDate: '2026-10-24' }), d = dossier(fs, '西湖');
+    expect(itemInsight(i, judgeItem(i, t, d), [d], t.startDate).rules.find(r => r.label === '营业时间')).toMatchObject({ basis: 'reference' });
+  });
+  it('两个独立站点一致标为多源一致，一个站点标为单一来源', () => {
     const two = ['a.com', 'b.com'].map(d => on(hours('08:00', '17:00', null), 4, d));
-    expect(check(two, 'hours_fit').ruleStatus).toBe('reference');
-    expect(check([...two, on(hours('08:00', '17:00', null), 4, 'c.com')], 'hours_fit').ruleStatus).toBe('verified');
+    const basis = (fs: Fact[]) => { const i = item({ kind: 'scenic', placeName: '西湖', start: null, end: null }), t = trip([i], { startDate: '2026-10-24' }), d = dossier(fs, '西湖'); return itemInsight(i, judgeItem(i, t, d), [d], t.startDate).rules.find(r => r.label === '营业时间')?.basis; };
+    expect(check(two.slice(0, 1), 'hours_fit').ruleStatus).toBe('verified');
+    expect(basis(two.slice(0, 1))).toBe('reference');
+    expect(basis(two)).toBe('consensus');
+  });
+  it('百科和本地宝页面标题都只是地名，不当作转载合并', () => {
+    const fs = [on(hours('09:00', '18:00', null), 3, 'baike.baidu.com'), on(hours('09:00', '18:00', null), 3, 'gz.bendibao.com')];
+    const d = dossier(fs, '海心沙');
+    d.evidence = fs.map(f => ({ ...page(f.evidenceId, f.domain, '海心沙', f.quote), tier: 3 }));
+    const late = on(hours('10:00', '18:00', null), 3, 'qunar.com');
+    const r = resolveFacts([...fs, late], '2026-10-24', { ...d, facts: [...fs, late] });
+    expect(r.error).toBeNull();
+    expect(r.picked).toHaveLength(2);
   });
   it('平台来源按多数一致取值，而不是只信最新一篇', () => {
     const majority = ['m.hz.bendibao.com', 'tw.trip.com', 'news.qq.com'].map((d, n) => on(hours('06:30', '18:00', null), n === 2 ? 4 : 3, d, { publishedAt: '2026-05-01' }));
@@ -39,6 +55,21 @@ describe('多个独立来源交叉验证', () => {
     expect(r.error).toBeNull();
     expect(r.picked.every(f => f.kind === 'hours' && f.payload.seasons[0].open === '06:30')).toBe(true);
     expect(r.overruled).toContain(newest);
+  });
+  it('一年多以前的新闻报道不再压过当前来源，作为过时说法保留', () => {
+    const old = on(hours('10:00', '20:00', null), 2, 'peopleapp.com', { publishedAt: '2022-05-28' });
+    const current = on(hours('10:00', '22:00', null), 3, 'baike.baidu.com', { publishedAt: '2026-10-20' });
+    const r = resolveFacts([old, current], '2026-10-28', dossier([old, current]));
+    expect(r.error).toBeNull();
+    expect(r.picked).toEqual([current]); expect(r.overruled).toContain(old);
+    // A recent report still outranks platform pages.
+    const recent = on(hours('10:00', '20:00', null), 2, 'thepaper.cn', { publishedAt: '2026-09-01' });
+    expect(resolveFacts([recent, current], '2026-10-28', dossier([recent, current])).picked).toEqual([recent]);
+  });
+  it('运营时间只比较首末班，方向写法和备注不同不算矛盾', () => {
+    const ferry = (domain: string, entity: string, note: string) => on(fact({ kind: 'service_hours', payload: { entity, first: '07:00', last: '22:00', lastDayOffset: 0, note } }), 4, domain);
+    const fs = [ferry('52maps.com', '东金线：金陵东路渡口→东昌路渡口', '下行'), ferry('meet-in-shanghai.net', '东金线金陵东路渡口', '15分钟1班')];
+    expect(resolveFacts(fs, '2026-10-27', dossier(fs)).error).toBeNull();
   });
   it('平台来源一比一说法不同时如实标为来源矛盾', () => {
     const fs = [on(hours('08:00', '17:00', null), 3, 'mafengwo.cn'), on(hours('07:30', '17:00', null), 3, 'qunar.com')];
@@ -62,9 +93,10 @@ describe('从开放时间推断当天是否开放', () => {
     expect(check(fs, 'open_on_date', { kind: 'museum' }, '2026-10-26').verdict).toBe('conflict');
   });
   it('博物馆只有开放时间、没有闭馆日信息时不推断开放', () => expect(check([hours()], 'open_on_date', { kind: 'museum' }, '2026-10-26').verdict).toBe('unknown'));
-  it('别的来源提到每周闭馆时，景点也不凭开放时间推断', () => {
+  it('别的来源只写了周一闭馆时，周二按这条说法开放，周一闭馆', () => {
     const blog = on(closedMonday(), 4, 'blog.example.com');
-    expect(check([hours(), blog], 'open_on_date', {}, '2026-10-27').verdict).toBe('unknown');
+    expect(check([hours(), blog], 'open_on_date', {}, '2026-10-27').verdict).toBe('confirmed');
+    expect(check([hours(), blog], 'open_on_date', {}, '2026-10-26').verdict).toBe('conflict');
   });
   it('写明“每日”的开放时间直接说明当天开放', () => expect(check([fact({ kind: 'hours', payload: { seasons: [{ from: '01-01', to: '12-31', open: '07:30', close: '17:30', lastEntry: '17:00' }], weekdays: null } }, { quote: '开放时间每日7:30-17:30（17:00停止入园）' }), closedMonday()], 'open_on_date', { kind: 'museum' }, '2026-10-27').verdict).toBe('confirmed'));
 });

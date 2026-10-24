@@ -5,7 +5,7 @@ import type { Dossier, Evidence, Judgment, Item } from '@/lib/domain';
 import { localTime, today } from '@/lib/dates';
 import { basisLabels, itemInsight, tierLabels, type ItemInsight, type RuleHighlight } from '@/lib/presentation';
 import { api } from '@/lib/client';
-import { missingTimeNote } from '@/lib/itinerary';
+import { planTimeLabel } from '@/lib/itinerary';
 import { Status } from './status';
 import { StopSource } from './guide-view';
 
@@ -77,16 +77,16 @@ export function EvidenceAudit({ item, judgments, dossiers, tripId, shareId, labe
   </details>;
 }
 /** Workspace side panel for the selected stop. */
-export function EvidencePanel({ item, judgments, dossiers, tripId, shareId, onAlternative, onPlanTime, busy, images = [], onImage }: { item: Item; judgments: Judgment[]; dossiers: Dossier[]; tripId?: string; shareId?: string; onAlternative?: () => void; onPlanTime?: () => void; busy?: boolean; images?: number[]; onImage?: (n: number) => void }) {
-  const insight = itemInsight(item, judgments, dossiers, judgments[0]?.date || today());
+export function EvidencePanel({ item, items = [], judgments, dossiers, tripId, shareId, onAlternative, onPlanTime, busy, images = [], onImage }: { item: Item; items?: Item[]; judgments: Judgment[]; dossiers: Dossier[]; tripId?: string; shareId?: string; onAlternative?: () => void; onPlanTime?: () => void; busy?: boolean; images?: number[]; onImage?: (n: number) => void }) {
+  const insight = itemInsight(item, judgments, dossiers, judgments[0]?.date || today(),items);
   return <div className="evidence-panel">
-    <div className="panel-heading"><span className="kicker">地点详情</span><h2>{item.placeName}</h2><p>{item.start ? `计划 ${item.start}${item.end ? `—${item.end}` : ' 到达'}` : missingTimeNote(item)}{item.activity ? ` · ${item.activity}` : ''}</p></div>
+    <div className="panel-heading"><span className="kicker">地点详情</span><h2>{item.placeName}</h2><p>计划 {planTimeLabel(item,items)}{item.activity ? ` · ${item.activity}` : ''}</p></div>
     {onImage && <StopSource item={item} images={images} onOpen={onImage}/>}
     {!judgments.length && <div className="empty-evidence"><FileSearch size={26}/><h3>{busy ? '正在为这一站查找证据' : '还没有检查结果'}</h3><p>规则和来源通过核验后，结论会显示在这里。</p></div>}
     {!!judgments.length && <>
       <p className={`stop-takeaway tone-${insight.state}`}>{insight.message}</p>
       <RuleGrid rules={insight.rules}/>
-      {onPlanTime && <button className="plan-time-button no-print" onClick={onPlanTime} disabled={busy}><Clock3 size={14}/>{item.start ? '修改计划到达时间' : '补充计划到达时间'}</button>}
+      {onPlanTime && <button className="plan-time-button no-print" onClick={onPlanTime} disabled={busy}><Clock3 size={14}/>{insight.missingTime ? '补充计划到达时间' : '修改计划时间（选填）'}</button>}
       <GuideUpdate item={item} insight={insight}/>
       <KeySources insight={insight}/>
       <EvidenceAudit item={item} judgments={judgments} dossiers={dossiers} tripId={tripId} shareId={shareId}/>

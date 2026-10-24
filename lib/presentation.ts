@@ -1,28 +1,32 @@
 import type { Alternative, Dossier, Evidence, Fact, Item, Judgment, Suggestion, TripInput } from './domain';
 import { dateForDay, inSeason, weekday, weekdayLabel } from './dates';
 import { dayAdvisories, scopeName, type Advisory } from './risk';
-import { unresolvedTarget } from './itinerary';
+import { unresolvedTarget, flexibleTransfer, openArea, planTimeLabel } from './itinerary';
 
-export type PlanState = 'adjust' | 'fits' | 'needs_time' | 'verify' | 'pending';
-export const planLabels: Record<PlanState, string> = { adjust: '需调整', fits: '可前往', needs_time: '待补时间', verify: '待核实', pending: '尚未核验' };
+export type PlanState = 'adjust' | 'fits' | 'partial' | 'reference' | 'alert' | 'needs_time' | 'verify' | 'pending';
+export const planLabels: Record<PlanState, string> = { adjust: '需调整', fits: '时段符合', partial: '部分已核实', reference: '出行参考', alert:'留意预警', needs_time: '待补时间', verify: '待核实', pending: '尚未核验' };
 export const planHints: Record<PlanState, string> = {
   adjust: '有依据的闭馆、区域关闭公告、预警期间不宜前往，或超出入场时段、抵离冲突。',
   fits: '当天开放、没有生效的预警或关闭公告，已填时段或全天开放符合已核实的规则；不代表已预约或一定有票。',
   needs_time: '营业规则已查到，补上你的到达时间才能判断来不来得及。',
   verify: '关键规则缺少可靠依据、来源说法不一致或无法访问。',
   pending: '还没有生成核验结果。',
+  partial: '已经核实一部分关键规则，其余缺口在该站说明中列出。',
+  reference: '步行或打车无需核对首末班；实际路况、候车和耗时以当天为准。',
+  alert: '已有来源支持天气预警或应急响应；与营业时间是否查到分开展示，不代表已经公告关闭。',
 };
 export const isPlanConflict = (j: Judgment) => j.verdict === 'conflict' && j.type !== 'guide_claim' && j.type !== 'weather';
 /** How strong the sources behind a rule are, in the words shown to visitors. */
 export type Basis = 'official' | 'authority' | 'consensus' | 'reference';
 export const tierLabels = ['', '官方来源', '权威来源', '平台参考', '普通网页'];
-export const basisLabels: Record<Basis, string> = { official: '官方', authority: '权威来源', consensus: '多源一致', reference: '仅供参考' };
+export const basisLabels: Record<Basis, string> = { official: '官方', authority: '权威来源', consensus: '多源一致', reference: '单一来源' };
 export type RuleHighlight = { label: string; value: string; note?: string; verified: boolean; basis?: Basis; tone?: 'good' | 'bad' | 'warn' | 'muted' };
 export const safetyLabels: Record<string, string> = { AREA_CLOSED: '已公告关闭', SERVICE_SUSPENDED: '已公告停运', HAZARD_EXPOSED: '不建议前往', HAZARD_ALERT: '预警期间', SERVICE_ALERT: '以停运公告为准', CLOSURE_REPORTED: '有关闭消息待证实', CONTEXT_PENDING:'公告仍在检查', CONTEXT_FAILED:'公告检查未完成' };
 export type ItemInsight = {
   state: PlanState; message: string; rules: RuleHighlight[]; updates: Judgment[];
   conflicts: Judgment[]; citations: { evidence: Evidence; quote: string }[];
   hours: string | null; allDay: boolean; missingTime: boolean;
+  plannedTime: string;
   /** The guide's opening-hour claims that no longer match, normalised for display. */
   staleClaims: string[];
 };
@@ -44,14 +48,17 @@ export function basisOf(facts: Fact[]): Basis | undefined {
 const span = (open: string, close: string) => open === '00:00' && ['24:00', '23:59'].includes(close) ? '全天开放' : `${open}—${close}`;
 const md = (v: string) => `${Number(v.slice(0, 2))}月${Number(v.slice(3))}日`;
 const weekdayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+const modeLabels: Record<string, string> = { walk: '步行', taxi: '打车', drive: '自驾', bike: '骑行' };
 
 /** Describe source facts separately from the fit of the user's schedule. */
-export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier[], date: string): ItemInsight {
+export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier[], date: string, items: Item[] = []): ItemInsight {
   const js = judgments.filter(j => j.itemId === item.id);
   const facts = dossiers.flatMap(d => d.facts);
   const venueFacts = dossiers.filter(d => js.some(j => j.venueId === d.venue.id)).flatMap(d => d.facts).filter(usable);
   const evidence = dossiers.flatMap(d => d.evidence);
   const unresolved = unresolvedTarget(item);
+  const flexible = flexibleTransfer(item), area = openArea(item);
+  const ruleBasis = basisOf;
   const place = !unresolved && item.kind !== 'transport' && item.kind !== 'hotel';
   const rules: RuleHighlight[] = [];
   const usedFacts: Fact[] = [];
@@ -66,13 +73,14 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   }
   const openCheck = js.find(j => j.type === 'open_on_date');
   if (openCheck && place) {
-    const basis = basisOf(facts.filter(f => openCheck.factIds.includes(f.id)));
+    const basis = ruleBasis(facts.filter(f => openCheck.factIds.includes(f.id)));
     if (openCheck.verdict === 'conflict') rules.push({ label: '当天', value: ['TEMP_CLOSED', 'CLOSED_UNTIL_NOTICE'].includes(openCheck.reasonCode) ? '临时关闭' : `${weekdayLabel(date)}闭馆`, verified: true, basis, tone: 'bad', note: openCheck.reasonCode === 'CLOSED_UNTIL_NOTICE' ? '未见恢复开放通知' : undefined });
     // An announced closure is already shown in its own tile; the day tile would only repeat it.
     else if (safety?.verdict === 'conflict') { /* see the notice tile */ }
+    else if (openCheck.reasonCode === 'PUBLIC_AREA') rules.push({ label: '当天', value: '不闭园', verified: true, tone: 'good', note: '公共区域' });
     else if (openCheck.verdict === 'confirmed') rules.push({ label: '当天', value: '正常开放', verified: true, basis, tone: 'good', note: `${md(date.slice(5))} ${weekdayLabel(date)}` });
     else rules.push({ label: '当天', value: openCheck.reasonCode === 'OPEN_ENDED_CLOSURE' ? '恢复时间待确认' : '未确认', verified: false, tone: openCheck.reasonCode === 'OPEN_ENDED_CLOSURE' ? 'bad' : 'muted',
-      note: openCheck.reasonCode === 'OPEN_ENDED_CLOSURE' ? '查到临时关闭报道' : openCheck.reasonCode === 'SOURCES_DISAGREE' ? '来源说法不一致' : '未查到闭馆规则' });
+      note: openCheck.reasonCode === 'OPEN_ENDED_CLOSURE' ? '查到临时关闭报道' : openCheck.reasonCode === 'SOURCES_DISAGREE' ? '来源说法不一致' : '缺少适用的开放依据' });
   }
 
   const hoursCheck = js.find(j => j.type === 'hours_fit');
@@ -85,19 +93,25 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   const range = season && 'from' in season && 'to' in season && season.from.length === 5 && !(season.from === '01-01' && season.to === '12-31') ? `${md(season.from)}—${md(season.to)}适用` : '';
   const closedToday = openCheck?.verdict === 'conflict';
   if (hours) {
-    const basis = hoursVerified ? basisOf(hourFacts) : 'reference';
+    const basis = hoursVerified ? ruleBasis(hourFacts) : 'reference';
     rules.push({ label: '营业时间', value: allDay ? '全天开放' : hours, verified: hoursVerified, basis, note: range || (hoursVerified ? undefined : '只查到个别来源，待核实') });
     usedFacts.push(...hourFacts);
+  } else if (hoursCheck?.reasonCode === 'PUBLIC_AREA') {
+    rules.push({ label: '开放时间', value: '随时可去', verified: true, tone: 'good', note: '公共区域；店铺和其中的场馆按各自时间' });
   } else if (place) {
     const other = closedToday ? venueFacts.find(f => f.kind === 'hours' && f.payload.weekdays && !f.payload.weekdays.includes(weekday(date)) && f.payload.seasons.some(s => inSeason(date, s.from, s.to))) : undefined;
     const otherPeriod = other?.kind === 'hours' ? other.payload.seasons.find(s => inSeason(date, s.from, s.to)) : undefined;
     if (other?.kind === 'hours' && otherPeriod) {
       rules.push({ label: '营业时间', value: '当天不开放', verified: true, tone: 'bad', note: `${other.payload.weekdays!.map(d => weekdayNames[d]).join('、').replace(/^周二、周三、周四、周五、周六、周日$/, '周二至周日')} ${span(otherPeriod.open, otherPeriod.close)}` });
       usedFacts.push(other);
-    } else if (windows.length > 1) rules.push({ label: '营业时间', value: windows.slice(0, 3).join(' / '), verified: false, tone: 'muted', note: '来源说法不一致，以景区当天公告为准' });
+    } else if (windows.length > 1) {
+      rules.push({ label: '营业时间', value: windows.slice(0, 3).join(' / '), verified: false, tone: 'muted', note: hoursCheck?.reasonCode==='HOURS_FIT_COMMON'?'各来源均覆盖你填的时段；具体开闭时间仍保留各自说法':'来源说法不一致，以当天公告为准' });
+      if(hoursCheck?.reasonCode==='HOURS_FIT_COMMON')rules.push({label:'已核对时段',value:`${item.start}${item.end?`—${item.end}`:''}`,verified:true,basis:ruleBasis(hourFacts)});
+      usedFacts.push(...hourFacts);
+    }
     else rules.push({ label: '营业时间', value: '未查到', verified: false, tone: 'muted', note: '出发前向场馆确认' });
   }
-  if (!allDay && !closedToday && hours && ['museum', 'scenic', 'show'].includes(item.kind)) {
+  if (!area && !allDay && !closedToday && hours && ['museum', 'scenic', 'show'].includes(item.kind)) {
     const entries = hourFacts.filter(f => period(f, date)?.lastEntry);
     if (entries.length) {
       const values = [...new Set(entries.map(f => period(f, date)!.lastEntry!))];
@@ -121,7 +135,7 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   }
 
   const booking = js.find(j => j.type === 'reservation_rule');
-  const ticketClaim = item.claimedRules.find(c => c.kind === 'other' && /门票|免费|元|r\b/i.test(c.text))?.text.replace(/^门票[:：]\s*/, '').replace(/(\d+)\s*r\b/i, '$1元');
+  const ticket = item.profile?.ticket ?? null, ticketClaim = ticket?.text ?? null;
   if (booking?.verdict === 'confirmed') {
     const bookingFacts = facts.filter(f => booking.factIds.includes(f.id) && f.kind === 'reservation');
     const f = bookingFacts[0];
@@ -129,19 +143,20 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
       rules.push({ label: '预约 / 购票', value: f.payload.required ? '需提前预约' : '无需预约', verified: true, basis: basisOf(bookingFacts), tone: f.payload.required ? undefined : 'good', note: f.payload.channel || (ticketClaim ? `攻略：门票${ticketClaim}` : undefined) });
       usedFacts.push(f);
     }
-  } else if (['museum', 'scenic', 'show'].includes(item.kind)) {
+  } else if (['museum', 'scenic', 'show'].includes(item.kind) && (!area || booking || item.claimedRules.some(c=>c.kind==='reservation'))) {
     const reservations = venueFacts.filter((f): f is Fact & { kind: 'reservation' } => f.kind === 'reservation');
     const required = [...new Set(reservations.map(f => f.payload.required))];
     if (required.length === 1) rules.push({ label: '预约 / 购票', value: required[0] ? '可能需预约' : '可能无需预约', verified: false, basis: 'reference', note: `只查到个别来源${ticketClaim ? `；攻略：门票${ticketClaim}` : ''}` });
     else if (required.length > 1) rules.push({ label: '预约 / 购票', value: '说法不一致', verified: false, tone: 'muted', note: '部分来源要求预约，出发前确认' });
-    else rules.push({ label: '预约 / 购票', value: ticketClaim && /免费/.test(ticketClaim) ? '攻略称免费' : '未查到', verified: false, tone: 'muted', note: ticketClaim && !/免费/.test(ticketClaim) ? `攻略：门票${ticketClaim}` : '未查到预约要求' });
+    else rules.push({ label: '预约 / 购票', value: ticket?.free ? '攻略称免费' : '未查到', verified: false, tone: 'muted', note: ticketClaim && !ticket?.free ? `攻略：门票${ticketClaim}` : '未查到预约要求' });
   }
   const service = js.find(j => j.type === 'service_hours');
   const serviceFact = facts.find(f => service?.factIds.includes(f.id) && f.kind === 'service_hours');
   if (serviceFact?.kind === 'service_hours') {
     rules.push({ label: '运营时间', value: `${serviceFact.payload.first || '首班待核实'}—${serviceFact.payload.last}${serviceFact.payload.lastDayOffset ? '（次日）' : ''}`, verified: service?.verdict !== 'unknown', basis: service?.verdict !== 'unknown' ? basisOf([serviceFact]) : 'reference', note: service?.reasonCode === 'SOURCES_DISAGREE' ? '来源说法不一致' : undefined });
     usedFacts.push(serviceFact);
-  } else if (item.kind === 'transport' && !unresolved) rules.push({ label: '运营时间', value: '未查到', verified: false, tone: 'muted', note: '以承运方、12306 或地图实时信息为准' });
+  } else if (flexible) rules.push({ label: '出行方式', value: modeLabels[item.profile?.mode ?? 'walk'] ?? '自行出发', verified: false, tone: 'muted', note: '无需核对首末班；路况与候车以当天为准' });
+  else if (item.kind === 'transport' && !unresolved) rules.push({ label: '运营时间', value: '未查到', verified: false, tone: 'muted', note: '以该线路运营方当天信息为准' });
 
   const updates = js.filter(j => j.type === 'guide_claim' && j.verdict === 'conflict');
   const staleClaims = updates.length ? [...new Set(item.claimedRules.filter(c => c.kind === 'hours').flatMap(c => {
@@ -152,10 +167,11 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   // Safety comes first: an announced closure or warning outranks every opening rule.
   const conflicts = js.filter(isPlanConflict).sort((a, b) => Number(b.type === 'safety') - Number(a.type === 'safety'));
   const alert = safety?.verdict === 'unknown' ? safety : null;
-  const missingTime = !item.start;
+  const missingTime = js.some(j=>j.reasonCode==='MISSING_TIME');
   const core = js.filter(j => ['open_on_date', 'hours_fit', 'service_hours', 'arrival_fit'].includes(j.type));
   const fits = core.length > 0 && core.every(j => j.verdict === 'confirmed');
-  const state: PlanState = !js.length ? 'pending' : conflicts.length ? 'adjust' : alert ? 'verify' : fits ? 'fits' : missingTime && (hoursVerified || serviceFact) ? 'needs_time' : 'verify';
+  const hasVerified = core.some(j=>j.verdict==='confirmed'&&j.factIds.length>0);
+  const state: PlanState = !js.length ? 'pending' : conflicts.length ? 'adjust' : alert ? alert.factIds.length?'alert':['CONTEXT_PENDING','CONTEXT_FAILED'].includes(alert.reasonCode)&&hasVerified?'partial':'verify' : flexible ? 'reference' : fits ? 'fits' : missingTime && (hoursVerified || serviceFact) ? 'needs_time' : hasVerified ? 'partial' : 'verify';
   const entry = rules.find(r => r.label === '停止入场' && /^\d/.test(r.value))?.value;
   // Under a warning the usual hours are context only, never the reason a stop is fine.
   const usual = hoursVerified && allDay ? '平时全天开放。' : hoursVerified && hours ? `平时 ${span(...hours.split('—') as [string, string])} 开放。` : '';
@@ -164,26 +180,29 @@ export function itemInsight(item: Item, judgments: Judgment[], dossiers: Dossier
   const first = conflicts[0];
   const message = (first && first.type === 'open_on_date' && closedText[first.reasonCode] ? `${md(date.slice(5))}（${weekdayLabel(date)}）${closedText[first.reasonCode]}，这天去会扑空。` : first?.explanation) ?? (alert ? `${alert.explanation}${usual}` : null) ?? (
     unresolved ? unresolved.message :
-    state === 'fits' ? (allDay ? '全天开放，当天任何时间都可以去。' : '当天开放，你填的时段在开放时间内。') :
+    state === 'fits' ? (item.kind==='transport'?service?.explanation:openCheck?.reasonCode==='PUBLIC_AREA'?'公共区域，随时可以去；其中的场馆和店铺按各自时间。':item.kind==='restaurant'?`${item.start}${item.end?`—${item.end}`:''} 在查到的营业时段内；临时休息与座位情况出发前向商家确认。`:allDay ? '全天开放，任何时间都可以去。' : item.start ? '当天开放，你填的时段在开放时间内。' : '当天开放。') :
+    state === 'reference' ? '按游览进度步行或打车，无需核对首末班；候车、路况和实际耗时以当天导航或现场为准。' :
+    state === 'partial' ? `${hoursCheck?.verdict==='confirmed'?`计划时段符合 ${hours||'已查到的营业窗口'}`:openCheck?.verdict==='confirmed'?'当天常规开放规则已核实':'已核实部分规则'}；${openCheck?.verdict==='unknown'?'当天是否开放仍缺少依据':hoursCheck?.verdict==='unknown'?'营业时段仍需确认':'还有必要检查未完成'}。` :
     state === 'needs_time' && serviceFact?.kind === 'service_hours' && !hoursVerified ? `查到${serviceFact.payload.first ? `首班 ${serviceFact.payload.first}、` : ''}末班 ${serviceFact.payload.last}${serviceFact.payload.lastDayOffset ? '（次日）' : ''}；补上乘车时间就能核对赶不赶得上。` :
     state === 'needs_time' ? (openCheck?.verdict === 'confirmed' ? `当天开放${hours ? `，${span(...hours.split('—') as [string, string])}` : ''}${entry ? `，${entry} 前入场` : ''}。补上到达时间就能核对来不来得及。` : `营业时间已查到${hours ? `（${hours}）` : ''}，但当天是否开放还没确认。`) :
     state === 'pending' ? '还没有生成核验结果。' :
     openCheck?.reasonCode === 'OPEN_ENDED_CLOSURE' ? '查到临时关闭的报道，没说何时恢复，出发前务必确认。' :
     windows.length > 1 ? '各来源给出的开放时间不一致，出发前以景区当天公告为准。' :
-    item.kind === 'transport' ? '没查到可靠的班次时间，出发前用 12306、承运方或地图确认。' :
+    item.kind === 'transport' ? service?.explanation||'没查到这条线路可靠的运营时间，请向运营方确认。' :
+    area ? '街区公共区域的开放依据还不完整；只核对漫步范围，不要求补售票或预约时间。' :
     hours ? '只查到个别网页的说法，出发前再向场馆确认。' : '没查到可靠的开放信息，出发前向场馆确认。');
   const citations = [...new Map(usedFacts.flatMap(f => {
     const e = evidence.find(e => e.id === f.evidenceId);
     return e ? [[e.url, { evidence: e, quote: f.quote }] as const] : [];
   })).values()].sort((a, b) => a.evidence.tier - b.evidence.tier);
-  return { state, message, rules, updates, conflicts, citations, hours, allDay, missingTime, staleClaims };
+  return { state, message: message||'已有结果见下方规则。', rules, updates, conflicts, citations, hours, allDay, missingTime, plannedTime:planTimeLabel(item,items), staleClaims };
 }
 
 export function itineraryInsights(trip: TripInput, judgments: Judgment[], dossiers: Dossier[]) {
-  const items = trip.items.map(item => ({ item, insight: itemInsight(item, judgments, dossiers, dateForDay(trip.startDate, item.day)) }));
-  const counts = { adjust: 0, fits: 0, needs_time: 0, verify: 0, pending: 0 };
+  const items = trip.items.map(item => ({ item, insight: itemInsight(item, judgments, dossiers, dateForDay(trip.startDate, item.day), trip.items) }));
+  const counts = { adjust: 0, fits: 0, partial: 0, reference: 0, alert:0, needs_time: 0, verify: 0, pending: 0 };
   for (const { insight } of items) counts[insight.state]++;
-  return { items, counts, missingTimes: trip.items.filter(i => !i.start).length, updates: items.filter(i => i.insight.updates.length).length };
+  return { items, counts, missingTimes: items.filter(i => i.insight.missingTime).length, updates: items.filter(i => i.insight.updates.length).length };
 }
 
 /** A notice in a few words, e.g. 台风黄色预警, 防台风Ⅲ级应急响应, 区域景区关闭. */
@@ -248,8 +267,8 @@ export function tripVerdict(trip: TripInput, judgments: Judgment[], dossiers: Do
   }
   const alertDays = risk.filter(r => r.alerted);
   if (alertDays.length) return { tone: 'warn', headline: `${alertDays.map(r => shortDate(r.date)).join('、')}${alertDays[0].notices[0] ? `有${alertDays[0].notices[0].name}` : '有预警'}，${alertDays.reduce((n, r) => n + r.alerted, 0)} 处出发前再确认`, detail: '预警期间景区可能临时关闭、交通可能停运，出发当天再看一次官方公告。' };
-  if (counts.verify * 2 >= trip.items.length) return { tone: 'info', headline: `${counts.verify} 个地点没查到可靠规则，出发前逐一确认`, detail: '查不到的不会说成能去；已查到的规则和原文都列在每个地点下面。' };
-  if (counts.verify) return { tone: 'info', headline: `大部分安排已核实，${counts.verify} 处出发前再确认`, detail: '待核实的地点没查到可靠规则，或来源说法不一致。' };
+  if (counts.verify) return { tone: 'info', headline: `${counts.verify} 处关键信息仍需确认`, detail: `${counts.fits?`${counts.fits} 处时段已核实。`:''}${counts.partial?`${counts.partial} 处已核实部分规则，缺口见各站说明。`:''}${counts.reference?`${counts.reference} 段步行或打车按当天情况安排。`:''}待核实表示缺少依据，不代表已发现冲突。` };
+  if (counts.partial) return { tone: 'info', headline: `${counts.partial} 处已核实部分规则，尚有信息缺口`, detail: '已查到的规则与仍需确认的部分分别列在各站；缺少依据不表示安排有冲突。' };
   if (counts.needs_time) return { tone: 'info', headline: '规则都查到了，补上到达时间再核对一遍', detail: '营业时间和停止入场已核实；填上计划到达时间，就能判断来不来得及。' };
-  return { tone: 'good', headline: '按查到的规则，这趟行程走得通', detail: '不代表已有门票或预约名额，出发前在官方渠道预约。' };
+  return { tone: 'good', headline: '已填时段与查到的常规规则相符', detail: '打车、排队及实时营业以当天为准；需购票的地点仍须自行确认票务。' };
 }

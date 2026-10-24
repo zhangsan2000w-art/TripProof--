@@ -8,7 +8,7 @@ import { searchSources } from './search';
 import { providerCount } from './search/config';
 import { verifyEvidence } from './evidence';
 import { corroboratesClaim } from './announcements';
-import { extractAdvisories, extractFacts, extractWeatherFacts, hasRiskWords, supportedDossierFacts } from './facts';
+import { extractAdvisories, extractFacts, extractWeatherFacts, supportedDossierFacts } from './facts';
 import { hazardWindowDays, riskKey } from './risk';
 import { judgeItem } from './judge';
 import { AppError, errorMessage } from './errors';
@@ -112,7 +112,8 @@ export async function searchRisk(runId: string, city: string, dates: string[]): 
     catch (error) { d.limitations.push(error instanceof AppError ? error.message : '预警搜索未完成。'); }
   }));
   const place = city.replace(/市$/, '');
-  const candidates = [...new Map(pages.filter(hasRiskWords).map(p => [p.url, p])).values()]
+  // The queries already ask for warnings and closures; the reader decides what each page says.
+  const candidates = [...new Map(pages.map(p => [p.url, p])).values()]
     .sort((a, b) => Number(`${b.title}${b.passage}`.includes(place)) - Number(`${a.title}${a.passage}`.includes(place)));
   d.evidence = await mapLimit(candidates.slice(0, 6), 4, e => links.run(() => verifyEvidence(e, place,true)));
   for (const e of d.evidence) emit(runId, 'evidence', e);
@@ -126,13 +127,13 @@ export async function readRisk(runId: string, trip: Trip, risk: Dossier, dossier
   if (!dates.some(date => daysUntil(date) >= 0 && daysUntil(date) <= hazardWindowDays)) return;
   const items = trip.items.filter(i => (i.city || trip.destinationCity) === city);
   const places = [...new Map(items.map(i => [i.placeName, { place: i.placeName, kind: i.kind, note: `${i.activity} ${i.sourceText}`.replace(/\s+/g, ' ').slice(0, 120) }])).values()];
-  const notice = /台风|暴雨|暴雪|预警|应急响应|临时关闭|暂时关闭|暂停开放|停航|停运|封闭/;
-  const recent = (e: Evidence) => !e.publishedAt || daysUntil(e.publishedAt) >= -30;
+  // Notices are recent by nature: pages found while checking venues join in only when dated this month.
+  const recent = (e: Evidence) => !!e.publishedAt && daysUntil(e.publishedAt) >= -30;
   const found = dossiers.filter(d => d !== risk && d.venue.city === city).flatMap(d => d.evidence)
-    .filter(e => e.linkStatus !== 'broken' && recent(e) && notice.test(`${e.title} ${e.passage}`));
-  const pool = [...new Map([...risk.evidence, ...found].map(e => [e.url, e])).values()]
-    .filter(e=>!risk.advisoryReadKeys?.includes(sourceSnapshot(e)))
-    .sort((a, b) => a.tier - b.tier || Number(notice.test(b.title)) - Number(notice.test(a.title)) || (b.publishedAt ?? '').localeCompare(a.publishedAt ?? '')).slice(0, 14);
+    .filter(e => e.linkStatus !== 'broken' && recent(e));
+  const fresh = (list: Evidence[]) => list.filter(e => !risk.advisoryReadKeys?.includes(sourceSnapshot(e)));
+  const byTier = (a: Evidence, b: Evidence) => a.tier - b.tier || (b.publishedAt ?? '').localeCompare(a.publishedAt ?? '');
+  const pool = [...new Map([...fresh(risk.evidence).sort(byTier), ...fresh(found).sort(byTier)].map(e => [e.url, e])).values()].slice(0, 14);
   if (!pool.length) {if(risk.contextStatus!=='failed')risk.contextStatus='complete';return;}
   try {
     const out = await models.run(() => extractAdvisories(risk.venue.id, city, dates, places, pool));

@@ -11,15 +11,25 @@ describe('日期和开放规则', () => {
   it('按上海时区计算星期，拒绝无效日期', () => { expect(weekday('2026-10-26')).toBe(1); expect(validDate('2026-02-30')).toBe(false); expect(holidayState('2026-10-05')).toBe('holiday'); });
   it('周一闭馆即冲突', () => expect(check([closedMonday()], 'open_on_date').verdict).toBe('conflict'));
   it('未发现公告不能证明开放', () => expect(check([], 'open_on_date').verdict).toBe('unknown'));
-  it('不能从闭馆日反推其他日开放', () => expect(check([closedMonday()], 'open_on_date', {}, '2026-10-27').verdict).toBe('unknown'));
+  it('来源写明闭馆日时，其他日子按该来源开放', () => expect(check([closedMonday()], 'open_on_date', {}, '2026-10-27').verdict).toBe('confirmed'));
+  it('来源只写了开放时间、没有闭馆日的博物馆不推断开放', () => expect(check([hours()], 'open_on_date', {}, '2026-10-27').verdict).toBe('unknown'));
   it('节假日例外只取消该闭馆规则', () => expect(check([closedMonday(true)], 'open_on_date', {}, '2026-10-05').verdict).toBe('unknown'));
   it('未公布年份的例外不猜测', () => expect(check([closedMonday(true)], 'open_on_date', {}, '2027-01-04').reasonCode).toBe('HOLIDAY_SCHEDULE_NOT_PUBLISHED'));
   it('临时开放可覆盖相同维度的常规闭馆', () => expect(check([closedMonday(), fact({ kind: 'temp_open', payload: { from: '2026-10-26', to: '2026-10-26', note: '临时开放' } })], 'open_on_date').verdict).toBe('confirmed'));
   it('临时时间不能覆盖独立闭馆事实', () => expect(check([closedMonday(), fact({ kind: 'temp_hours', payload: { from: '2026-10-26', to: '2026-10-26', open: '09:00', close: '20:00', lastEntry: null } })], 'open_on_date').verdict).toBe('conflict'));
   it('未写恢复日期的关闭公告不能丢弃，也不能推断已恢复',()=>{const f=fact({kind:'temp_closure',payload:{from:'2026-10-21',to:null,scope:'whole',note:'台风防御'}});const j=check([openDays([1]),f],'open_on_date');expect(j.verdict).toBe('conflict');expect(j.reasonCode).toBe('CLOSED_UNTIL_NOTICE');expect(j.factIds).toContain(f.id);});
+  it('较早的未写恢复日期的闭馆，被之后官方页面的正常开放时间取代；近期的仍按关闭处理', () => {
+    const date = addDays(today(), 3), closure = (from: string) => fact({ kind: 'temp_closure', payload: { from, to: null, scope: 'whole', note: '闭馆调整' } }, { tier: 3, domain: 'baike.baidu.com' });
+    const official = (publishedAt: string) => [hours(), closedMonday()].map(f => Object.assign(f, { publishedAt, evidenceId: 'official' }));
+    const run = (fs: Fact[]) => { const i = item({ start: null, end: null }); return judgeItem(i, trip([i], { startDate: date }), dossier(fs)).find(j => j.type === 'open_on_date')!; };
+    const old = addDays(today(), -120), recent = addDays(today(), -5);
+    expect(run([closure(old), ...official(addDays(today(), -40))]).verdict).toBe(weekday(date) === 1 ? 'conflict' : 'confirmed');
+    expect(run([closure(old), ...official(addDays(today(), -200))]).reasonCode).toBe('OPEN_ENDED_CLOSURE');
+    expect(run([closure(recent), ...official(addDays(today(), -2))]).reasonCode).toBe('CLOSED_UNTIL_NOTICE');
+  });
   it('局部关闭不能判整个场馆关闭', () => { const j = check([openDays([1]), fact({ kind: 'temp_closure', payload: { from: '2026-10-26', to: '2026-10-27', scope: 'partial', note: '二楼展厅' } })], 'open_on_date'); expect(j.verdict).toBe('confirmed'); expect(j.notes.join()).toContain('二楼'); });
   it('过期事实不能用于换日期确认', () => expect(check([fact({ kind: 'weekly_open', payload: { weekdays: [1], exceptStatutoryHolidays: false } }, { validTo: '2026-10-25' })], 'open_on_date').verdict).toBe('unknown'));
-  it('明确规定的节后顺延闭馆由日历计算',()=>{const f=closedMonday(true);f.quote='周一闭馆，遇法定节假日正常开放，闭馆顺延至节后第一天。';expect(check([f,openDays()], 'open_on_date',{},'2026-10-08').reasonCode).toBe('CLOSED_AFTER_HOLIDAY');});
+  it('明确规定的节后顺延闭馆由日历计算',()=>{const f=closedMonday(true);f.quote='周一闭馆，遇法定节假日正常开放，闭馆顺延至节后第一天。';if(f.kind==='weekly_closure')f.payload.shiftsAfterHoliday=true;expect(check([f,openDays()], 'open_on_date',{},'2026-10-08').reasonCode).toBe('CLOSED_AFTER_HOLIDAY');});
   it('同页季节例外覆盖同页全年基础时间',()=>{const regular=hours(),summer=fact({kind:'hours',payload:{weekdays:null,seasons:[{from:'06-01',to:'10-31',open:'09:00',close:'17:30',lastEntry:'16:30'}]}},{evidenceId:regular.evidenceId});expect(check([regular,summer],'hours_fit',{start:'16:29',end:null},'2026-10-27').verdict).toBe('confirmed');});
 });
 describe('时间边界', () => {
@@ -37,7 +47,7 @@ describe('来源冲突和未知', () => {
   it('采用较新同级来源并保留旧证据', () => { const a=closedMonday(), b=openDays([1]); b.publishedAt='2026-10-20'; const j=check([a,b],'open_on_date'); expect(j.verdict).toBe('confirmed'); expect(j.overruledFactIds).toContain(a.id); });
   it('错误分馆、坏链接、未经核实引文均不能确认', () => { for(const patch of [{venueMatch:'other_branch' as const},{linkStatus:'broken' as const},{quoteVerified:false}]) expect(check([fact({kind:'weekly_open',payload:{weekdays:[1],exceptStatutoryHolidays:false}},patch)],'open_on_date').verdict).toBe('unknown'); });
   it('需浏览器打开的证据保持未知', () => { const f=openDays([1]); f.linkStatus='browser_only'; expect(check([f],'open_on_date').reasonCode).toBe('LINK_REQUIRES_BROWSER'); });
-  it('同域转载不是两份独立证据', () => { const fs=[openDays([1]),openDays([1])]; fs.forEach((f,n)=>{f.tier=3;f.domain=`sub${n}.ctrip.com`;}); expect(resolveFacts(fs,'2026-10-26',dossier(fs)).error).toBe('WEAK_EVIDENCE'); });
+  it('同域转载不是两份独立证据', () => { const fs=[openDays([1]),openDays([1]),closedMonday(),closedMonday()]; fs.forEach((f,n)=>{f.tier=3;f.domain=n<2?`sub${n}.ctrip.com`:n===2?'qyer.com':'mafengwo.cn';}); const r=resolveFacts(fs,'2026-10-26',dossier(fs)); expect(r.error).toBeNull(); expect(r.picked.every(f=>f.kind==='weekly_closure')).toBe(true); });
   it('不同平台一致规则可以交叉验证', () => { const fs=[openDays([1]),openDays([1])]; fs.forEach((f,n)=>{f.tier=3;f.domain=n?'qyer.com':'ctrip.com';}); expect(resolveFacts(fs,'2026-10-26',dossier(fs)).error).toBe(null); });
   it('天气日期不一致不能确认', () => { const date=today(), f=fact({kind:'weather',payload:{date:addDays(date,1),city:'杭州',summary:'晴',precipitationProb:null,warning:null}}); const i=item({kind:'scenic'}); expect(judgeWeather(i,trip([i],{startDate:date}),dossier([f])).verdict).toBe('unknown'); });
   it('降雨不能推断闭馆', () => { const date=today(),f=fact({kind:'weather',payload:{date,city:'杭州',summary:'小雨',precipitationProb:80,warning:null}}); const i=item({kind:'scenic'}); expect(judgeWeather(i,trip([i],{startDate:date}),dossier([f])).verdict).toBe('unknown'); });

@@ -18,7 +18,7 @@ function risk(city: string, facts: Fact[], places: PlaceRisk[]): Dossier {
 const place = (name: string, exposure: PlaceRisk['exposure'], covers: PlaceRisk['covers'] = []): PlaceRisk => ({ place: name, exposure, exposureReason: '测试', covers });
 
 describe('预警与区域公告优先于营业时间', () => {
-  it.each(['pending','failed'] as const)('必要的区域公告检查为 %s 时，常规开放依据不能产生最终可前往',status=>{const i=item(),t=trip([i],{startDate:start}),d=risk('杭州',[],[]);d.contextStatus=status;const js=judgeTrip(t,[dossier([hours()]),d]);expect(js.find(j=>j.type==='safety')).toMatchObject({verdict:'unknown',reasonCode:status==='pending'?'CONTEXT_PENDING':'CONTEXT_FAILED',factIds:[]});expect(itemInsight(i,js,[dossier([hours()]),d],start).state).toBe('verify');});
+  it.each(['pending','failed'] as const)('必要的区域公告检查为 %s 时，常规开放依据不能产生最终可前往',status=>{const i=item(),t=trip([i],{startDate:start}),d=risk('杭州',[],[]);d.contextStatus=status;const js=judgeTrip(t,[dossier([hours()]),d]);expect(js.find(j=>j.type==='safety')).toMatchObject({verdict:'unknown',reasonCode:status==='pending'?'CONTEXT_PENDING':'CONTEXT_FAILED',factIds:[]});const view=itemInsight(i,js,[dossier([hours()]),d],start);expect(view.state).toBe('partial');expect(view.message).toContain(status==='pending'?'仍在':'未能完成');});
   it('区域公告按范围覆盖到未点名的海边景点', () => {
     const closure = notice({ scope: '所有涉海景区景点', area: '思明区' });
     const r = risk('厦门', [closure], [place('环岛路沙滩', 'coastal', [{ factId: closure.id, how: 'scope', reason: '思明区海边沙滩' }]), place('厦门市博物馆', 'indoor')]);
@@ -128,7 +128,7 @@ describe('报告状态：安全结论盖过营业时间', () => {
     const warning = notice({ type: 'warning', hazard: '台风', level: '蓝色', area: '厦门市' });
     const r = risk('厦门', [warning], [place('鼓浪屿', 'coastal', [{ factId: warning.id, how: 'area', reason: '' }])]);
     const judgments = judgeTrip(t, [venue, r]);
-    expect(itemInsight(t.items[0], judgments, [venue, r], start).state).toBe('verify');
+    expect(itemInsight(t.items[0], judgments, [venue, r], start).state).toBe('alert');
     expect(itemInsight(t.items[0], judgeTrip(t, [venue]), [venue], start).state).toBe('fits');
   });
 });
@@ -139,9 +139,10 @@ describe('场馆临时关闭未写恢复日期', () => {
     const t = trip([item({ start: null, end: null })], { startDate: start });
     expect(judgeItem(t.items[0], t, dossier([hours(), closure(addDays(today(), -2))])).find(j => j.type === 'open_on_date')).toMatchObject({ verdict: 'conflict', reasonCode: 'CLOSED_UNTIL_NOTICE' });
   });
-  it('很久以前的关闭只提示待确认', () => {
+  it('很久以前的关闭、之后没有官方页面显示恢复时只提示待确认', () => {
     const t = trip([item({ start: null, end: null })], { startDate: start });
-    expect(judgeItem(t.items[0], t, dossier([hours(), closure(addDays(today(), -60))])).find(j => j.type === 'open_on_date')).toMatchObject({ verdict: 'unknown', reasonCode: 'OPEN_ENDED_CLOSURE' });
+    const before = Object.assign(hours(), { publishedAt: addDays(today(), -90) });
+    expect(judgeItem(t.items[0], t, dossier([before, closure(addDays(today(), -60))])).find(j => j.type === 'open_on_date')).toMatchObject({ verdict: 'unknown', reasonCode: 'OPEN_ENDED_CLOSURE' });
   });
 });
 
@@ -171,7 +172,7 @@ describe('来源分级不按城市写名单', () => {
 });
 
 import { searchAllowance } from '../lib/budget';
-import { allDayHours, closedWeekdays } from '../lib/facts';
+import { withoutContradictions } from '../lib/facts';
 import { resolveFacts } from '../lib/judge';
 describe('搜索额度按地点分配', () => {
   it('15 个地点时每站至少一次，博物馆优先拿到额外额度', () => {
@@ -194,19 +195,21 @@ describe('开放规则不能和同一句的闭馆日矛盾', () => {
     const closed = fact({ kind: 'weekly_closure', payload: { closedWeekdays: [1], exceptStatutoryHolidays: false } }, { quote: '周一闭馆', evidenceId: f.evidenceId });
     expect(judgeItem(t.items[0], t, dossier([f, closed])).find(j => j.type === 'open_on_date')).toMatchObject({ verdict: 'conflict', reasonCode: 'CLOSED_WEEKLY' });
   });
-  it('读出闭馆星期，并拒绝包含闭馆日的“每天开放”', () => {
-    expect(closedWeekdays('剧院参观开放时间为10:00—16:30，逢周一闭馆')).toEqual([1]);
-    expect(closedWeekdays('每周二至周日开放，星期一不开放')).toEqual([1]);
-    const ev: Evidence = { id: 'e', searchCallId: 's', url: 'https://x.example.cn', finalUrl: null, title: 't', site: 'x.example.cn', publishedAt: null, retrievedAt: new Date().toISOString(), passage: '全年开放，周一闭馆', content: '全年开放，周一闭馆', score: null, authorityLevel: null, tier: 3, linkStatus: 'ok', linkCheckedAt: null, pageSha256: null };
-    expect(factSupported({ evidenceId: 'e', quote: '全年开放，周一闭馆', venueMatch: 'exact', validFrom: null, validTo: null, kind: 'weekly_open', payload: { weekdays: [0, 1, 2, 3, 4, 5, 6], exceptStatutoryHolidays: false } }, ev)).toBe(false);
+  it('同一来源既说每天开放又写了闭馆日时，丢弃误读的每天开放', () => {
+    const open = fact({ kind: 'weekly_open', payload: { weekdays: [0, 1, 2, 3, 4, 5, 6], exceptStatutoryHolidays: false } }, { quote: '全年开放，周一闭馆' });
+    const closed = fact({ kind: 'weekly_closure', payload: { closedWeekdays: [1], exceptStatutoryHolidays: false } }, { quote: '周一闭馆', evidenceId: open.evidenceId });
+    expect(withoutContradictions([open, closed])).toEqual([closed]);
+    // A different source saying every day is a disagreement to weigh, not a misreading.
+    const other = { ...open, evidenceId: 'other' };
+    expect(withoutContradictions([other, closed])).toEqual([other, closed]);
   });
   it('多个来源写“全天开放”时，不被一篇文章里的夜游时段带偏', () => {
-    const open = (domain: string, quote: string) => fact({ kind: 'weekly_open', payload: { weekdays: [0, 1, 2, 3, 4, 5, 6], exceptStatutoryHolidays: false } }, { tier: 3, domain, quote });
-    const derived = [open('guide-a.com', '开放时间：全年 全天开放'), open('guide-b.cn', '步行街全天开放')].flatMap(f => allDayHours(f).map(h => ({ ...f, ...h, id: `${f.id}-h` }) as Fact));
+    // The reader writes "全天开放" as 00:00—24:00 hours.
+    const open = (domain: string, quote: string) => fact({ kind: 'hours', payload: { seasons: [{ from: '01-01', to: '12-31', open: '00:00', close: '24:00', lastEntry: null }], weekdays: null } }, { tier: 3, domain, quote });
+    const derived = [open('guide-a.com', '开放时间：全年 全天开放'), open('guide-b.cn', '步行街全天开放')];
     const night = fact({ kind: 'hours', payload: { seasons: [{ from: '01-01', to: '12-31', open: '18:00', close: '22:00', lastEntry: null }], weekdays: null } }, { tier: 3, domain: 'guide-c.net' });
     const r = resolveFacts([...derived, night], '2026-10-25', dossier([...derived, night]));
     expect(r.error).toBeNull();
     expect(r.picked[0].kind === 'hours' && r.picked[0].payload.seasons[0].open).toBe('00:00');
-    expect(allDayHours(open('d.example.com', '每天 9:00-18:00 全天开放'))).toEqual([]);
   });
 });

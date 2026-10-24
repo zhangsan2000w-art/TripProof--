@@ -1,4 +1,6 @@
-import type { Dossier, ExtractedFact, Fact, Item, TripInput } from '../lib/domain';
+import type { Dossier, ExtractedFact, Fact, Item, PlaceProfile, TripInput } from '../lib/domain';
+/** A stop's nature as the guide reader returns it. */
+export const profile = (p: Partial<PlaceProfile> = {}): PlaceProfile => ({ openArea: false, undecided: false, mode: null, address: null, ticket: null, ...p });
 export function item(overrides: Partial<Item> = {}): Item {
   return { id: 'a', day: 1, seq: 1, placeName: '测试博物馆', city: '杭州', kind: 'museum', activity: '参观', sourceText: '测试博物馆', sourceImage: null, confidence: 1, dependsOn: [], start: '10:00', end: '12:00', claimedRules: [], ...overrides };
 }

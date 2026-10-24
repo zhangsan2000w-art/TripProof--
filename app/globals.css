@@ -132,6 +132,16 @@ q { quotes: "“" "”"; }
 .plan-status.plan-fits { background: var(--green-soft); color: var(--green-ink); border-color: var(--green-line); }
 .plan-status.plan-needs_time { background: var(--amber-soft); color: var(--amber-ink); border-color: var(--amber-line); }
 .plan-status.plan-verify { background: var(--slate-soft); color: var(--slate-ink); border-color: var(--slate-line); }
+.plan-status.plan-partial { background: #edf4fc; color: #35628b; border-color: #c9dced; }
+.plan-status.plan-reference { background: var(--slate-soft); color: var(--slate-ink); border-color: var(--slate-line); }
+.seg.plan-partial, .legend.plan-partial::before { background: #6c9fc6; }
+.seg.plan-reference, .legend.plan-reference::before { background: #b0bbc5; }
+.tone-partial { color: #35628b; }
+.tone-reference { color: var(--slate-ink); }
+.plan-status.plan-alert { background: var(--amber-soft); color: var(--amber-ink); border-color: var(--amber-line); }
+.seg.plan-alert, .legend.plan-alert::before { background: #c38a35; }
+.tone-alert { color: var(--amber-ink); }
+.basis-listing { background: #edf4fc; color: #35628b; }
 .plan-status.plan-pending { background: var(--surface-3); color: var(--muted); }
 .status { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .status-confirmed { background: var(--green-soft); color: var(--green-ink); } .status-conflict { background: var(--red-soft); color: var(--red-ink); }
@@ -481,7 +491,7 @@ details[open] > summary > .chev { transform: rotate(180deg); }
 .example-entry { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 .example-entry button { display: inline-flex; align-items: center; gap: 4px; color: var(--brand); font-weight: 600; }
 .samples, .steps, .honesty { margin-top: 48px; }
-.sample-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+.sample-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(188px, 1fr)); gap: 12px; }
 .sample-card { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 18px; overflow: hidden; transition: transform .15s, border-color .15s; }
 .sample-card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--slate); }
 .sample-card.tone-bad::before { background: var(--red); } .sample-card.tone-good::before { background: var(--green); }

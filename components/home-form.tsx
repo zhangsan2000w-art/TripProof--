@@ -6,7 +6,7 @@ import type { Draft, Item, Trip } from '@/lib/domain';
 import { kinds } from '@/lib/domain';
 import { api, ApiError } from '@/lib/client';
 import { submitExtraction, waitForExtraction } from '@/lib/extraction-client';
-import { missingTimeNote } from '@/lib/itinerary';
+import { missingTimeNote, transportWindow, flexibleTransfer } from '@/lib/itinerary';
 import { prepareDisplayImages, prepareImages } from '@/lib/images-client';
 import { Button } from './ui/button';
 import { dateForDay, tomorrow, weekdayLabel } from '@/lib/dates';
@@ -84,7 +84,8 @@ export function HomeForm() {
       if (error instanceof ApiError && !error.retryable) forgetJob();
     } finally { if (!control.signal.aborted) setBusy(false); }
   }
-  function update(itemId: string, change: Partial<Item>) { setItems(items => items.map(i => i.id === itemId ? { ...i, ...change } : i)); }
+  // A renamed or re-typed stop is read again when saved, so an old reading never sticks to a new place.
+  function update(itemId: string, change: Partial<Item>) { setItems(items => items.map(i => i.id === itemId ? { ...i, ...change, ...('placeName' in change || 'kind' in change ? { profile: undefined } : {}) } : i)); }
   async function confirm() {
     setBusy(true); setError('');
     try {
@@ -121,7 +122,7 @@ export function HomeForm() {
               <select aria-label={`第${index + 1}项类型`} value={item.kind} onChange={e => update(item.id, { kind: e.target.value as Item['kind'] })}>{kinds.map(k => <option value={k} key={k}>{kindLabels[k]}</option>)}</select>
               <label className="day-input">第<input aria-label={`第${index + 1}项所在天数`} type="number" min={1} max={30} value={item.day} onChange={e => update(item.id, { day: Number(e.target.value) })}/>天</label>
               <button type="button" className="icon-button delete-item" title="删除这项安排" aria-label={`删除${item.placeName}`} onClick={() => removeItem(item.id)}><Trash2 size={15}/></button></div>
-            <div className="edit-sub"><label>到达<input type="time" value={item.start || ''} onChange={e => update(item.id, { start: e.target.value || null })}/></label><label>离开<input type="time" value={item.end || ''} onChange={e => update(item.id, { end: e.target.value || null })}/></label>{!item.start && <span className="missing-note">{missingTimeNote(item)}</span>}<input className="city-input" aria-label={`第${index + 1}项城市`} placeholder={city || '城市'} value={item.city || ''} onChange={e => update(item.id, { city: e.target.value || null })}/></div>
+            <div className="edit-sub"><label>到达<input type="time" value={item.start || ''} onChange={e => update(item.id, { start: e.target.value || null })}/></label><label>离开<input type="time" value={item.end || ''} onChange={e => update(item.id, { end: e.target.value || null })}/></label>{!item.start && <span className="missing-note">{transportWindow(item,items)?.label || (flexibleTransfer(item)?'按游览进度出发，无需填写精确时间':missingTimeNote(item))}</span>}<input className="city-input" aria-label={`第${index + 1}项城市`} placeholder={city || '城市'} value={item.city || ''} onChange={e => update(item.id, { city: e.target.value || null })}/></div>
             <details className="source-detail"><summary>{item.confidence < .7 ? '读取不确定，请对照原文' : '原文与攻略写的规则'}{item.sourceImage ? ` · 图${item.sourceImage}` : ''}</summary><p>{item.sourceText}</p>{item.claimedRules.map((c, n) => <p className="claim-text" key={n}>攻略说：{c.text}</p>)}<label>活动说明<input value={item.activity} onChange={e => update(item.id, { activity: e.target.value })}/></label></details>
           </div>; })}
         </div>)}

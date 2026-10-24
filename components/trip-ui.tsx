@@ -6,8 +6,8 @@ import { searchLabel } from '@/lib/search-labels';
 
 export const kindLabels: Record<Item['kind'], string> = { museum: '博物馆', scenic: '景点', show: '演出', restaurant: '餐饮', transport: '交通', hotel: '住宿', other: '街区' };
 export const monthDay = (date: string) => `${Number(date.slice(5, 7))}月${Number(date.slice(8))}日`;
-export const planStates = ['adjust', 'fits', 'needs_time', 'verify'] as const;
-const stateIcons = { adjust: AlertTriangle, fits: Check, needs_time: Clock3, verify: CircleHelp, pending: CircleHelp };
+export const planStates = ['adjust', 'alert', 'fits', 'partial', 'needs_time', 'verify', 'reference'] as const;
+const stateIcons = { adjust: AlertTriangle, alert:Siren, fits: Check, partial: CircleHelp, reference: Clock3, needs_time: Clock3, verify: CircleHelp, pending: CircleHelp };
 
 export function PlanStatus({ state, busy = false }: { state: PlanState; busy?: boolean }) {
   const Icon = stateIcons[state];
@@ -23,7 +23,7 @@ export function StatusBar({ counts, filter, onFilter, partial = false }: { count
   return <div className="status-bar-wrap">
     <div className="status-bar" aria-hidden>{planStates.filter(s => counts[s]).map(s => <span key={s} className={`seg plan-${tone(s)}`} style={{ width: `${(counts[s] / total) * 100}%` }}/>)}</div>
     <div className="outcome-filters" role={onFilter ? 'group' : undefined} aria-label="按状态筛选">
-      {planStates.map(s => onFilter
+      {planStates.filter(s=>counts[s]>0).map(s => onFilter
         ? <button key={s} type="button" className={`legend plan-${tone(s)} ${filter === s ? 'active' : ''}`} aria-pressed={filter === s} title={hint(s)} onClick={() => onFilter(filter === s ? 'all' : s)}>{label(s)}<b>{counts[s]}</b></button>
         : <span key={s} className={`legend plan-${tone(s)}`} title={hint(s)}>{label(s)}<b>{counts[s]}</b></span>)}
       {onFilter && filter && filter !== 'all' && <button type="button" className="legend legend-reset" onClick={() => onFilter('all')}>显示全部</button>}

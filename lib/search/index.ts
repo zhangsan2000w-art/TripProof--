@@ -15,7 +15,9 @@ export async function searchSources(runId: string, venueId: string, params: Sear
     const result = await searchPro(runId, venueId, params, budget);
     return { pages: result.pages, calls: [result.call], limitations: [] as string[] };
   }
-  const active = (['yuanbao', 'deepseek'] as const).filter(provider => configured[provider]);
+  const remaining=Math.min(Math.min(5,budget.limit??5)-budget.used,getRun(runId).limit-getRun(runId).used);
+  // Do not race two providers for the last slot: keep the existing primary search.
+  const active = (['yuanbao', 'deepseek'] as const).filter(provider => configured[provider]&&!(remaining<=1&&configured.yuanbao&&provider==='deepseek'));
   const results = await Promise.allSettled(active.map(provider => provider === 'yuanbao' ? searchPro(runId, venueId, params, budget) : searchDeepSeek(runId, venueId, params, budget)));
   assertRunning();
   if (getRun(runId).status === 'cancelled') throw new AppError('RUN_CANCELLED', '调查已停止。', 409);

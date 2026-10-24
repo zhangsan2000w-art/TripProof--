@@ -7,7 +7,7 @@ import { searchSources } from './search';
 import { verifyEvidence } from './evidence';
 import { extractFacts, supportedDossierFacts } from './facts';
 import { searchName, selectVenueSources } from './source-selection';
-import { openArea, unresolvedTarget, flexibleTransfer } from './itinerary';
+import { openArea, unresolvedTarget, flexibleTransfer, placeContext } from './itinerary';
 import { judgeTrip } from './judge';
 import { rippleEffects, suggestions } from './impact';
 import { redact } from './llm';
@@ -61,10 +61,11 @@ export async function readSources(ctx:ToolContext,ids:string[],onModelReady?:()=
     const parsed=new Set(ctx.state.parsed[d.venue.key]??[]);
     const pool=ctx.state.sources[d.venue.key]??[];
     const dynamic=new Set(listCalls(ctx.run.id,d.venue.id).filter(c=>c.params.freshness).map(c=>c.id));
-    const fresh=selectVenueSources(pool.filter(e=>!parsed.has(sourceSnapshot(e))||(dynamic.has(e.searchCallId)&&!parsed.has(`search:${e.searchCallId}`))),item.placeName,d.venue.city,d.venue.officialDomain,4,item.kind==='transport');
+    const target=placeContext(item);
+    const fresh=selectVenueSources(pool.filter(e=>!parsed.has(sourceSnapshot(e))||(dynamic.has(e.searchCallId)&&!parsed.has(`search:${e.searchCallId}`))),target.name,d.venue.city,d.venue.officialDomain,4,item.kind==='transport');
     if(!fresh.length)return;
     check.status='reading';check.nextAction='逐条核对引文、分馆和数字';ctx.persist();
-    const verified=await mapLimit(fresh,4,e=>links.run(()=>verifyEvidence(e,searchName(item.placeName),dynamic.has(e.searchCallId))));
+    const verified=await mapLimit(fresh,4,e=>links.run(()=>verifyEvidence(e,searchName(target.name),dynamic.has(e.searchCallId))));
     assertRunning();
     for(const e of verified){const at=d.evidence.findIndex(old=>old.url===e.url);if(at>=0)d.evidence[at]=e;else d.evidence.push(e);emit(ctx.run.id,'evidence',e);}
     // Replaced/failed pages cannot leave orphaned facts usable while a new parse is pending.
@@ -72,7 +73,7 @@ export async function readSources(ctx:ToolContext,ids:string[],onModelReady?:()=
     ctx.persist();
     let out:Awaited<ReturnType<typeof extractFacts>>;
     onModelReady?.();
-    try{out=await models.run(()=>extractFacts(d.venue.id,item.placeName,d.venue.city,d.venue.investigationDates,verified));}
+    try{out=await models.run(()=>extractFacts(d.venue.id,item.placeName,d.venue.city,d.venue.investigationDates,verified,target));}
     catch(error){assertRunning();d.limitations.push(errorMessage(error));check.status='done';check.stopReason=errorMessage(error);ctx.persist();return;}
     assertRunning();
     d.venue.canonicalName=out.canonicalName;
@@ -92,17 +93,20 @@ export async function investigateTargets(ctx:ToolContext,ids:string[],focus:Agen
     assertRunning();const d=dossierFor(ctx,item),check=ctx.state.checks.find(c=>c.itemId===item.id)!;
     const unresolved=unresolvedTarget(item);if(unresolved){d.limitations=[unresolved.message];check.status='needs_input';check.stopReason=unresolved.message;ctx.persist();return;}
     if(check.noProgress>=2){check.stopReason='连续两轮未获得新增有效证据，停止补查。';return;}
-    const name=redact(searchName(item.placeName,item.kind==='transport')),city=redact(d.venue.city);
+    const target=placeContext(item),name=redact(searchName(target.name,item.kind==='transport')),city=redact(d.venue.city);
+    const address=item.kind==='restaurant'&&target.address?` ${redact(target.address)}`:'';
     const dayItems=ctx.trip.items.filter(i=>i.day===item.day).sort((a,b)=>a.seq-b.seq),previous=dayItems[dayItems.findIndex(i=>i.id===item.id)-1];
     if(focus==='transport'&&item.kind!=='transport'&&!customQuery&&!previous){d.limitations.push('这站没有已选的上一站，未构造交通路线；需补充起点后再核验。');ctx.persist();return;}
-    const suffix=item.kind==='transport'?'运营时间 首末班':openArea(item)?'开放时间 步行区域 管理公告':`开放时间 停止入场 参观须知 闭馆${['museum','scenic','show'].includes(item.kind)?' 个人游客 预约 放票':''}`;
-    const queries:SearchParams[]=flexibleTransfer(item)?[{query:`${city} ${name} 步行 打车 路线 耗时参考`}]:customQuery?[{query:`${city} ${name} ${redact(customQuery)}`}]:focus==='transport'&&item.kind!=='transport'?[{query:`${city} ${redact(previous!.placeName)} 到 ${name} ${ctx.trip.mode==='drive'?'驾车':'公共交通'} 路线 耗时参考`}]:focus==='baseline'?[{query:`${city} ${name} ${suffix}`},{query:`${city} ${name} ${item.kind==='transport'?'停运 运营调整':'临时关闭 公告'} ${ctx.trip.startDate.slice(0,7)}`,freshness:'m2'}]:[{query:`${city} ${name} ${focus==='hours'&&openArea(item)?'步行区域 开放 管理规定':queryWords[focus]}`,...(['closures','contradiction'].includes(focus)?{freshness:'m2'}:{}),...(d.venue.officialDomain&&focus!=='contradiction'?{site:d.venue.officialDomain}:{})}];
+    const suffix=item.kind==='transport'?'运营时间 首末班':item.kind==='restaurant'?'营业时间 午市 晚市 订位':openArea(item)?'公共区域 开放时间 步行区域 管理公告':`开放时间 停止入场 参观须知 闭馆${['museum','scenic','show'].includes(item.kind)?' 个人游客 预约 放票':''}`;
+    const focusWords=item.kind==='restaurant'&&focus==='hours'?'营业时间 腾讯地图 携程 商户 地址':focus==='hours'&&openArea(item)?'公共区域 开放 管理规定':queryWords[focus==='baseline'?'hours':focus];
+    const queries:SearchParams[]=flexibleTransfer(item)?[{query:`${city} ${name} 步行 打车 路线 耗时参考`}]:customQuery?[{query:`${city} ${name}${address} ${redact(customQuery)}`}]:focus==='transport'&&item.kind!=='transport'?[{query:`${city} ${redact(previous!.placeName)} 到 ${name} ${ctx.trip.mode==='drive'?'驾车':'公共交通'} 路线 耗时参考`}]:focus==='baseline'?[{query:`${city} ${name}${address} ${suffix}`},...(item.kind==='restaurant'?[{query:`${city} ${name}${address} 腾讯地图 营业时间`}]:[{query:`${city} ${name} ${item.kind==='transport'?'停运 运营调整':'临时关闭 公告'} ${ctx.trip.startDate.slice(0,7)}`,freshness:'m2'}])]:[{query:`${city} ${name}${address} ${focusWords}`,...(['closures','contradiction'].includes(focus)?{freshness:'m2'}:{}),...(d.venue.officialDomain&&focus!=='contradiction'&&item.kind!=='restaurant'?{site:d.venue.officialDomain}:{})}];
     const validEvidence=()=>new Set(d.facts.filter(f=>f.quoteVerified&&f.linkStatus==='ok').map(f=>`${f.evidenceId}:${f.kind}:${JSON.stringify(f.payload)}`));
     const before=validEvidence();check.status='searching';check.nextAction=focus==='baseline'?'取得规则及近期公告':`补查：${focus}`;ctx.persist();
     const savedCalls=listCalls(ctx.run.id,d.venue.id),counter={used:savedCalls.filter(c=>!c.cacheHit).length};
     await Promise.all(queries.map(async params=>{
       const saved=savedCalls.find(c=>c.query===params.query);
-      if(saved&&(saved.errorCode||saved.resultCount===0||(ctx.state.sources[d.venue.key]??[]).some(e=>e.searchCallId===saved.id)))return;
+      const attempts=savedCalls.filter(c=>c.query===params.query&&!c.cacheHit).length;
+      if(saved&&(!saved.errorCode&&(saved.resultCount===0||(ctx.state.sources[d.venue.key]??[]).some(e=>e.searchCallId===saved.id))||saved.errorCode&&(!/NETWORK|TIMEOUT|ECONN|EAI_AGAIN|SEARCH_HTTP_5/.test(saved.errorCode)||attempts>=2)))return;
       if(!d.searchedScope.includes(params.query))d.searchedScope.push(params.query);ctx.persist();
       try{const response=await searchSources(ctx.run.id,d.venue.id,params,counter);assertRunning();d.limitations.push(...response.limitations);const pool=ctx.state.sources[d.venue.key]??[];ctx.state.sources[d.venue.key]=[...new Map([...pool,...response.pages].map(e=>[e.url,e])).values()];}
       catch(error){assertRunning();d.limitations.push(errorMessage(error));}
@@ -131,7 +135,7 @@ export async function checkContext(ctx:ToolContext,incremental=false) {
   const groups=new Map<string,Set<string>>();
   for(const item of ctx.trip.items){const city=item.city||ctx.trip.destinationCity;groups.set(city,(groups.get(city)??new Set()).add(dateForDay(ctx.trip.startDate,item.day)));}
   const weather=new Map<string,{city:string;date:string}>();
-  for(const item of ctx.trip.items.filter(i=>i.kind==='scenic'||/户外|登山|游船|步行|日落/.test(i.activity))){const city=item.city||ctx.trip.destinationCity,date=dateForDay(ctx.trip.startDate,item.day);weather.set(`${city}:${date}`,{city,date});}
+  for(const item of ctx.trip.items.filter(i=>i.kind==='scenic'||openArea(i))){const city=item.city||ctx.trip.destinationCity,date=dateForDay(ctx.trip.startDate,item.day);weather.set(`${city}:${date}`,{city,date});}
   const settled=await Promise.allSettled([
     mapLimit([...groups],2,async([city,dates])=>{
       let risk=ctx.result.dossiers.find(d=>d.venue.key===riskKey(city));

@@ -30,6 +30,7 @@ const instructions=`你是 TripProof 行程核验与修复 Agent。围绕用户�
 - finish：所有明确地点至少查过、必要补查和修复处理后结束；有待回答问题则等待用户。
 首轮基础规则核验由运行器直接批量执行，每次读取后自动 evaluate；天气与城市公告也由运行器调度，不必重复调用已完成的 evaluate/check_context。只对实际缺口定向补查，日期、时间缺失的询问放在取得规则之后。当前 judgments/checks 是完整的精简状态，delta 只说明本轮变化，不表示其他已有结论失效；原文不在 planner 输入中，不要因此反复读取同一证据包。已有结果的对话只处理用户指定的问题：解释使用存量证据，补充条件生成预览，明确要求复查才检索。纯换日期只本地试算。
 发现 SOURCES_DISAGREE 时优先用 contradiction 查独立来源；NO_EVIDENCE/WEAK_EVIDENCE 可定向补查，搜索已耗尽/两轮没有新增有效证据/仅剩实时信息时应停止。只有到达时间接近闭园才补查停止入场；不要为街区漫步查售票时间。
+window 表示原文包含该交通的安排窗口，不是缺少计划时间；SERVICE_WINDOW_FIT 后不要再问具体出发时刻。flexibleTransfer 的步行、打车不查首末班也不追问精确时刻。餐厅可以用分店地址一致的地图POI、携程商户页核对常规营业时间，不要只因不是官网继续补查；有地址但没有营业时间时，定向查该商户的腾讯地图/地图POI。商圈只查公共区域，不把寺庙内、登塔或单个店铺的时间当成全区域规则。
 有冲突先 preview_repair 尝试少改动原行程，无法解决再 find_alternatives，候选无法核验也必须保留未知。生成不超过三个预览。summary只写接下来实际行动的简短说明，不声称已执行未执行的工具。`;
 
 export function initialCheckpoint(run:Run,trip:Trip):AgentCheckpoint {

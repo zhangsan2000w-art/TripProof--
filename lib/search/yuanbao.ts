@@ -67,19 +67,21 @@ export async function searchPro(runId: string, venueId: string, params: SearchPa
     const queued=Date.now();await gate.enter();recordMetric('search_queue',Date.now()-queued,{venueId});
     const start = Date.now();
     const call: SearchCall = { id: id(), venueId, provider: 'yuanbao', query: params.query, params: { query: params.query, ...(params.site ? {site: params.site} : {}), ...(params.freshness ? {freshness: params.freshness} : {}), ...(body.Mode !== undefined ? {mode: Number(body.Mode)} : {}), ...(body.Cnt !== undefined ? {cnt: Number(body.Cnt)} : {}), ...(body.Industry ? {industry: String(body.Industry)} : {}) }, requestId: null, version: null, msg: null, errorCode: null, resultCount: 0, latencyMs: 0, calledAt: now(), cacheHit: false, cachedFrom: null };
-    let reserved=false;
+    let reserved=false,phase='reserve';
     try {
       assertRunning();
       if (venueCalls.used >= Math.min(5, venueCalls.limit ?? 5)) throw new AppError('VENUE_BUDGET', '该场馆已达到五次搜索上限。');
       reserveSearch(runId,venueId);reserved=true;venueCalls.used++;
+      phase='request';
       const response = await requestYuanbaoSearch(body);
       assertRunning();
+      phase='normalize';
       call.requestId = response.RequestId ?? null; call.version = response.Version ?? null; call.msg = response.Msg || null;
       if (response.Error) { call.errorCode = response.Error.Code; }
       const pages = response.Error || /hit black query|blacklist|黑名单/i.test(response.Msg || '') ? [] : (response.Pages ?? []).map(p => normalizePage(p, call.id)).filter((p): p is Evidence => !!p);
       call.resultCount = pages.length; call.latencyMs = Date.now() - start;
       recordMetric('search',call.latencyMs,{venueId,cacheHit:false});
-      saveCall(runId, call); emit(runId, 'search', call); last = call;
+      phase='persist';saveCall(runId, call); emit(runId, 'search', call); last = call;
       if (call.version) cacheSet('search:tier', call.version, 24 * 3600_000);
       if (!response.Error) { const result = { call, pages }; cacheSet(key, result); return result; }
       if (response.Error.Code === 'InvalidParameter' && ('Mode' in body || 'Cnt' in body || 'Industry' in body) && attempt === 0) {
@@ -88,10 +90,22 @@ export async function searchPro(runId: string, venueId: string, params: SearchPa
       if (response.Error.Code === 'RequestLimitExceeded' && attempt < 2) { await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 250 : 1000)); continue; }
       throw new AppError(response.Error.Code, '搜索服务返回错误，相关检查保持尚无法确认。', 502);
     } catch (error) {
+      const raw=error as {name?:unknown;code?:unknown;cause?:{code?:unknown}};
+      const safe=(v:unknown)=>typeof v==='string'&&/^[a-zA-Z0-9_ .-]{1,80}$/.test(v)?v:null;
+      const name=safe(raw?.name),code=safe(raw?.code),cause=safe(raw?.cause?.code);
+      const network=phase==='request'&&(name==='TimeoutError'||!!cause&&/^(?:ECONN|ENET|EHOST|EAI_|ETIMEDOUT|UND_ERR_)/.test(cause)||!!code&&/^(?:ECONN|ENET|EHOST|EAI_|ETIMEDOUT)/.test(code));
       if (reserved && (!last || last.id !== call.id)) {
-        call.errorCode = error instanceof AppError ? error.code : 'NETWORK_ERROR'; call.latencyMs = Date.now() - start;
+        call.errorCode = runSignal()?.aborted?'RUN_CANCELLED':error instanceof AppError ? error.code : network?name==='TimeoutError'?'SEARCH_TIMEOUT':`SEARCH_NETWORK_${cause||code}`:'SEARCH_INTERNAL_ERROR'; call.latencyMs = Date.now() - start;
+        call.msg=`stage=${phase}; type=${name||'unknown'}${cause||code?`; code=${cause||code}`:''}`;
         saveCall(runId, call); emit(runId, 'search', call);
       }
+      if(!(error instanceof AppError)&&!runSignal()?.aborted)console.error('[SearchPro failure]',{phase,name,code,cause});
+      assertRunning();
+      if(network&&attempt<2&&venueCalls.used<Math.min(5,venueCalls.limit??5)){
+        await new Promise(resolve=>setTimeout(resolve,250*(attempt+1)));
+        continue;
+      }
+      if(!(error instanceof AppError))throw new AppError(call.errorCode||'SEARCH_FAILED',network?'搜索连接暂时失败，已保存本次调用；未取得的证据保持未知。':'搜索处理未完成，已记录失败阶段；未取得的证据保持未知。',502);
       throw error;
     } finally { gate.leave(); }
   }

@@ -11,7 +11,9 @@ export function placeNames(name: string, transport = false): string[] {
   const main = full.replace(/[（(][^）)]*[）)]/g, '');
   const aliases = [...full.matchAll(/[（(]([^）)]+)[）)]/g)].map(m => m[1]).filter(a => [...a].length >= 3 && !/轨道交通|打车|步行|地铁|公交/.test(a));
   const parts = transport ? main.split(/[／/—\-：:→➡]+/).filter(p => [...p].length >= 2) : [];
-  return [...new Set([main || full, ...aliases, ...parts].filter(Boolean))];
+  const brand = !transport ? main.split(/[·•]/).filter(n=>n.length>=2) : [];
+  const bilingual = !transport && /[a-z]{3}/i.test(main) && /[\u3400-\u9fff]/.test(main) ? [main.replace(/[a-z]/gi,''),main.replace(/[\u3400-\u9fff]/g,'')] : [];
+  return [...new Set([main || full, ...aliases, ...parts, ...brand, ...bilingual].filter(n=>n.length>=2))];
 }
 /** The query form of a place name: brackets and route punctuation become spaces. */
 export function searchName(name: string, transport = false) {
@@ -21,7 +23,7 @@ export function searchName(name: string, transport = false) {
 export function selectVenueSources(pages: Evidence[], name: string, city: string, officialDomain: string | null, limit = 8, transport = false): Evidence[] {
   const mixedProviders = pages.some(page => page.provider === 'deepseek');
   const names = placeNames(name, transport);
-  const cores = names.map(n => n.replace(new RegExp(`^${city.replace(/市$/, '')}市?`), '').replace(/景区$|公园$|风景区$/, '') || n).filter(c => c.length >= 2);
+  const cores = names.map(n => n.replace(new RegExp(`^${city.replace(/市$/, '')}市?`), '').replace(/景区$|公园$|风景区$|商圈$/, '') || n).filter(c => c.length >= 2);
   const matches = (text: string) => names.some(n => text.includes(n)) || cores.some(c => text.includes(c));
   const score = (e: Evidence) => {
     const title = e.title.replace(/\s+/g, ''), body = `${e.passage} ${e.content}`.replace(/\s+/g, '');

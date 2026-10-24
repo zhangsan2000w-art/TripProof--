@@ -1,4 +1,6 @@
 export const goldenCases = [
+  { id: 'shanghai', name: '上海两天一夜', city: '上海', startDate: '2026-10-27', images: [], text: '上海.txt',
+    expected: [{ day: 1, names: ['豫园'] },{ day: 1, names: ['玉兰厢'] },{ day: 1, names: ['城隍庙'] },{ day: 1, names: ['南京东路步行街','南京东路','南京路步行街'] },{ day: 1, names: ['外滩'] },{ day: 1, names: ['陆家嘴'] },{ day: 2, names: ['武康路'] },{ day: 2, names: ['安福路'] },{ day: 2, names: ['米泰','Mi Thai'] },{ day: 2, names: ['淮海中路'] },{ day: 2, names: ['新天地'] }], forbidden: [] },
   { id: 'hangzhou', name: '杭州两天一夜', city: '杭州', startDate: '2026-10-24', images: ['hz1.jpg','hz2.jpg','hz3.jpg','hz4.jpg','hz5.jpg','hz6.jpg'], text: null,
     expected: [{ day: 1, names: ['西湖'] },{ day: 1, names: ['断桥残雪','断桥'] },{ day: 1, names: ['三潭印月'] },{ day: 1, names: ['雷峰塔'] },{ day: 1, names: ['河坊街'] },{ day: 2, names: ['灵隐寺'] },{ day: 2, names: ['法喜寺'] },{ day: 2, names: ['拱宸桥'] },{ day: 2, names: ['小河直街'] },{ day: 2, names: ['武林夜市'] }],
     forbidden: ['钱塘江','九溪烟树','西溪湿地','李百蟹','同兴春','杭公馆'] },

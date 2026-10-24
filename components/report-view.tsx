@@ -1,4 +1,5 @@
 'use client';
+import { planTimeLabel } from '@/lib/itinerary';
 import { useState } from 'react';
 import Link from 'next/link';
 import { Printer, Share2, Check, Download, ArrowUpRight, FileSearch, AlertCircle, LoaderCircle, AlertTriangle, Ticket, Clock3, CircleHelp, ChevronDown, Bus, Siren, Route } from 'lucide-react';
@@ -165,7 +166,7 @@ function Stop({ item, insight, index, trip, result, open, onToggle, images, onIm
     <div className="stop-card">
       <div className="stop-row" onClick={onToggle}>
         <div className="stop-text">
-          <div className="stop-title"><h3>{item.placeName}</h3><span className="stop-kind">{kindLabels[item.kind]}{item.proposedBy === 'agent' ? ' · Agent 建议' : ''}{item.start ? ` · ${item.start}${item.end ? `—${item.end}` : ''}` : ''}{short && !open ? ` · ${short}` : ''}</span></div>
+          <div className="stop-title"><h3>{item.placeName}</h3><span className="stop-kind">{kindLabels[item.kind]}{item.proposedBy === 'agent' ? ' · Agent 建议' : ''}{` · ${insight.plannedTime}`}{short && !open ? ` · ${short}` : ''}</span></div>
           <p className={`stop-msg tone-${insight.state}`}>{insight.message}</p>
         </div>
         <PlanStatus state={insight.state}/>
@@ -187,7 +188,7 @@ function QueryCard({ judgment, trip, result, index }: { judgment: Judgment; trip
   const item = trip.items.find(i => i.id === judgment.itemId)!;
   const sources = result.dossiers.flatMap(d => d.evidence).filter(e => judgment.evidenceIds.includes(e.id)).slice(0, 2);
   const calls = result.dossiers.find(d => d.venue.id === judgment.venueId)?.calls ?? [];
-  const question = `${judgment.date}（${weekdayLabel(judgment.date)}）${item.start || '计划时间未提供'} 去「${item.placeName}」：${checkLabels[judgment.type]}？`;
+  const question = `${judgment.date}（${weekdayLabel(judgment.date)}）${planTimeLabel(item,trip.items)} 去「${item.placeName}」：${checkLabels[judgment.type]}？`;
   const markdown = `问题：${question}\n\n答案：${statusLabels[judgment.verdict]}\n\n一句话解释：${judgment.explanation}\n\n来源：\n${sources.map(e => `- [${e.title}](${e.finalUrl || e.url})（发布 ${e.publishedAt || '未注明'}，检索 ${localTime(e.retrievedAt)}）`).join('\n') || '无可用于本项确认的来源，详见报告中的信息边界。'}\n\n检索记录：${searchLabel(calls)} ×${calls.length}\n${calls.map(c => `${c.provider === 'deepseek' ? 'DeepSeek Search · ' : ''}RequestId ${c.requestId || '未获得'}${c.cacheHit ? '（缓存）' : ''}`).join('\n')}\n`;
   function download() { const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' })); const a = document.createElement('a'); a.href = url; a.download = `TripProof-查询${index}.md`; a.click(); URL.revokeObjectURL(url); }
   return <article className="query-card"><span className="kicker">查询 {String(index).padStart(2, '0')}</span><h3>{question}</h3><Status verdict={judgment.verdict}/><p>{judgment.explanation}</p>{sources.map(e => <p key={e.id}>来源：<a href={e.finalUrl || e.url} target="_blank" rel="noopener noreferrer">{e.title}</a>（发布 {e.publishedAt || '未注明'}，检索 {localTime(e.retrievedAt)}）</p>)}{!sources.length && <p>此项没有可用于确认的来源，核实渠道见对应判定。</p>}<p className="mono small">{searchLabel(calls)} ×{calls.length} · RequestId {calls.find(c => c.requestId)?.requestId || '本项无需或未完成有效搜索'}</p><Button variant="outline" size="sm" className="no-print" onClick={download}><Download size={13}/>下载查询卡片</Button></article>;

@@ -5,12 +5,31 @@ export const timeString = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
 const closingTime = z.string().regex(/^(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$/);
 export const kinds = ['museum', 'scenic', 'show', 'restaurant', 'transport', 'hotel', 'other'] as const;
 export const claimSchema = z.object({ kind: z.enum(['hours', 'reservation', 'transport', 'other']), text: z.string().max(500) });
+export const travelModes = ['walk', 'taxi', 'drive', 'bike', 'metro', 'bus', 'rail', 'ferry', 'flight', 'coach', 'mixed'] as const;
+/**
+ * What kind of stop this is, as the model reads it from the guide. Code reads these fields
+ * instead of guessing from place names or keywords.
+ */
+export const placeProfileSchema = z.object({
+  /** Walking a public area (street, old town, waterfront, open park or square) without entering a ticketed venue. */
+  openArea: z.boolean(),
+  /** The guide has not chosen the business, lodging or route yet (e.g. lunch nearby, metro or walk). */
+  undecided: z.boolean(),
+  /** For transport: the chosen way of travelling; null for other stops or when not stated. */
+  mode: z.enum(travelModes).nullable(),
+  /** An address the guide writes for this stop. */
+  address: z.string().max(120).nullable(),
+  /** What the guide says about the ticket price. */
+  ticket: z.object({ free: z.boolean().nullable(), text: z.string().max(120) }).nullable(),
+});
+export type PlaceProfile = z.infer<typeof placeProfileSchema>;
 export const extractedItemSchema = z.object({
   seq: z.number().int().positive(), start: timeString.nullable(), end: timeString.nullable(),
   placeName: z.string().min(1).max(120), city: z.string().nullable(), kind: z.enum(kinds),
   activity: z.string().max(300), sourceText: z.string().min(1).max(1500), sourceImage: z.number().int().min(1).nullable(),
   confidence: z.number().min(0).max(1), dependsOnPrevious: z.boolean(),
   claimedRules: z.array(claimSchema),
+  profile: placeProfileSchema,
 });
 export const draftSchema = z.object({
   guideMeta: z.object({ title: z.string().nullable(), publishedAt: dateString.nullable() }),
@@ -19,7 +38,9 @@ export const draftSchema = z.object({
   ambiguities: z.array(z.string()).max(40),
 });
 export type Draft = z.infer<typeof draftSchema>;
-export const itemSchema = extractedItemSchema.omit({ dependsOnPrevious: true }).extend({
+export const itemSchema = extractedItemSchema.omit({ dependsOnPrevious: true, profile: true }).extend({
+  // Trips saved before profiles existed, and stops added by hand, are classified when saved.
+  profile: placeProfileSchema.optional(),
   id: z.string().min(1).max(80), day: z.number().int().min(1).max(30), dependsOn: z.array(z.string()).max(40),
   proposedBy: z.literal('agent').optional(),
 });
@@ -45,7 +66,7 @@ const weekdays = z.array(z.number().int().min(0).max(6)).min(1).max(7);
 const factBase = { evidenceId: z.string(), quote: z.string().min(1).max(80), venueMatch: z.enum(['exact', 'other_branch', 'unclear']), validFrom: dateString.nullable(), validTo: dateString.nullable() };
 export const extractedFactSchema = z.discriminatedUnion('kind', [
   z.object({ ...factBase, kind: z.literal('weekly_open'), payload: z.object({ weekdays, exceptStatutoryHolidays: z.boolean() }) }),
-  z.object({ ...factBase, kind: z.literal('weekly_closure'), payload: z.object({ closedWeekdays: weekdays, exceptStatutoryHolidays: z.boolean() }) }),
+  z.object({ ...factBase, kind: z.literal('weekly_closure'), payload: z.object({ closedWeekdays: weekdays, exceptStatutoryHolidays: z.boolean(), shiftsAfterHoliday: z.boolean().nullable().optional() }) }),
   z.object({ ...factBase, kind: z.literal('hours'), payload: z.object({ seasons: z.array(period).min(1).max(6), weekdays: weekdays.nullable() }) }),
   z.object({ ...factBase, kind: z.literal('temp_closure'), payload: z.object({ from: dateString, to: dateString.nullable(), scope: z.enum(['whole', 'partial']), note: z.string() }) }),
   z.object({ ...factBase, kind: z.literal('temp_open'), payload: z.object({ from: dateString, to: dateString, note: z.string() }) }),

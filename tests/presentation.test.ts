@@ -37,11 +37,14 @@ it('已证实的停止入场冲突必须标红；证据不足不会变成时段�
   expect(itemInsight(i,judgeItem(i,t,d),[d],t.startDate).state).toBe('adjust');
   expect(itemInsight(i,judgeItem(i,t),[],t.startDate).state).toBe('verify');
 });
-it('单个平台的停止入场参考不能误判为已确认冲突，也不能把临近闭园的安排确认可行', () => {
+it('补充平台写的停止入场时间没有相反说法时采用，临近闭园的安排不确认可行', () => {
   const i=item({start:'19:40',end:null}),t=trip([i]);
   const cutoff=hours('08:00','20:00','19:30');cutoff.tier=3;cutoff.domain='bendibao.com';
   const d=dossier([hours('08:00','20:00',null),cutoff]);
-  expect(judgeItem(i,t,d).find(j=>j.type==='hours_fit')).toMatchObject({verdict:'unknown',reasonCode:'LAST_ENTRY_UNVERIFIED'});
+  expect(judgeItem(i,t,d).find(j=>j.type==='hours_fit')).toMatchObject({verdict:'conflict',reasonCode:'AFTER_LAST_ENTRY'});
+  // Two platforms giving different cutoffs leave it to the traveller to ask.
+  const other=hours('08:00','20:00','19:50');other.tier=3;other.domain='qunar.com';
+  expect(judgeItem(i,t,dossier([hours('08:00','20:00',null),cutoff,other])).find(j=>j.type==='hours_fit')).toMatchObject({verdict:'unknown',reasonCode:'LAST_ENTRY_UNVERIFIED'});
 });
 it('同一平台重复规则优先引用标准页面，移动页面的日期字段不会挤掉标准来源', () => {
   const i=item({start:null,end:null}),t=trip([i]);

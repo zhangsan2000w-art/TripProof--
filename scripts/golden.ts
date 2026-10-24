@@ -45,7 +45,9 @@ for (const spec of goldenCases.filter(c => !selected || c.id === selected)) {
     for (const day of draft.days) for (const raw of day.items) { const { dependsOnPrevious, ...item } = raw; const prev = items.at(-1); items.push({ ...item, id: crypto.randomUUID(), day: day.dayIndex, dependsOn: dependsOnPrevious && prev?.day === day.dayIndex ? [prev.id] : [] }); }
     const hits = spec.expected.filter(e => items.some(i => i.day === e.day && e.names.some(n => i.placeName.includes(n)))).length;
     const recall = hits / spec.expected.length;
-    const inventedTime = items.some(i => i.start !== null || i.end !== null);
+    // A planned time must be written in the stop's own text; the reader never works one out.
+    const written = (time: string, text: string) => [time, time.replace(/^0/, '')].some(t => text.normalize('NFKC').replace(/：/g, ':').includes(t));
+    const inventedTime = items.some(i => [i.start, i.end].some(t => t !== null && !written(t, i.sourceText)));
     const recommendationsAsItems = items.filter(i => spec.forbidden.some(n => i.placeName.includes(n)));
     for (const day of new Set(spec.expected.map(e => e.day))) {
       const indices = spec.expected.filter(e => e.day === day).map(e => items.findIndex(i => i.day === day && e.names.some(n => i.placeName.includes(n)))).filter(n => n >= 0);
@@ -77,7 +79,8 @@ for (const spec of goldenCases.filter(c => !selected || c.id === selected)) {
       if (['availability'].includes(judgment.type) && judgment.verdict !== 'unknown') violations.push(`Realtime falsely confirmed: ${judgment.id}`);
       if (judgment.verdict === 'confirmed' || judgment.verdict === 'conflict') {
         const basis = facts.filter(f => judgment.factIds.includes(f.id));
-        const computedFromPlan = judgment.type === 'arrival_fit' || (judgment.type === 'connection_fit' && judgment.reasonCode === 'PLAN_TIME_OVERLAP');
+        // Plan arithmetic and public areas (read from the guide, no closing rule found) need no source.
+        const computedFromPlan = judgment.type === 'arrival_fit' || (judgment.type === 'connection_fit' && judgment.reasonCode === 'PLAN_TIME_OVERLAP') || (judgment.reasonCode === 'PUBLIC_AREA' && judgment.verdict === 'confirmed');
         if (!computedFromPlan && (!basis.length || basis.some(f => f.linkStatus !== 'ok'))) violations.push(`Missing usable source: ${judgment.id}`);
       }
     }

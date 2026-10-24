@@ -34,7 +34,8 @@ export function applyOperations(trip: TripInput, ops: Operation[], alternatives:
       item.placeName = candidate.name; item.city = candidate.dossier.venue.city; item.proposedBy = 'agent';
       item.activity = `Agent 建议：以${candidate.name}替代原安排`;
       item.sourceText = `Agent 建议替代场馆：${candidate.name}。原安排：${item.sourceText}`.slice(0,1500);
-      item.sourceImage = null; item.claimedRules = [];
+      // The replacement is a specific venue; the old stop's reading (open area, undecided, address) does not carry over.
+      item.sourceImage = null; item.claimedRules = []; delete item.profile;
     }
     if (op.type === 'drop') { copy.items = copy.items.filter(i => i.id !== item.id).map(i => ({ ...i, dependsOn: i.dependsOn.filter(id => id !== item.id) })); }
     if (op.type === 'shift') { item.start = op.start; item.end = op.end; }

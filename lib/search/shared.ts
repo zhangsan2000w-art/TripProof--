@@ -9,7 +9,7 @@ export class SearchGate {
   private active = 0;
   private waiting: (() => void)[] = [];
   private starts: number[] = [];
-  constructor(private concurrency=concurrencySetting('SEARCH_CONCURRENCY',4,16),private startsPerSecond=concurrencySetting('SEARCH_STARTS_PER_SECOND',4,20)) {}
+  constructor(private concurrency=concurrencySetting('SEARCH_CONCURRENCY',4,4),private startsPerSecond=concurrencySetting('SEARCH_STARTS_PER_SECOND',4,20)) {}
   async enter() {
     assertRunning();
     if (this.active >= this.concurrency) await new Promise<void>(resolve => this.waiting.push(resolve));

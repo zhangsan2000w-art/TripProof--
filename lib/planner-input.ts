@@ -1,6 +1,7 @@
 import type { ToolContext } from './agent-tools';
 import { getRunProgress } from './store';
 import { messages } from './agent-store';
+import { transportWindow, flexibleTransfer, placeContext } from './itinerary';
 
 /** The planner chooses gaps/actions; original evidence stays in the fact reader. */
 export function plannerInput(ctx: ToolContext, previous = new Map<string,string>()) {
@@ -11,7 +12,7 @@ export function plannerInput(ctx: ToolContext, previous = new Map<string,string>
   const input = {
     request:ctx.run.input.message??'核验这份已确认攻略，查清各站规则，遇到冲突主动尝试修复。',
     round:ctx.state.round,budget:{used:getRunProgress(ctx.run.id).used,limit:ctx.run.limit},contextDone:ctx.state.contextDone,
-    trip:{startDate:ctx.trip.startDate,city:ctx.trip.destinationCity,items:ctx.trip.items.map(({id,placeName,city,day,start,end,kind,activity})=>({id,placeName,city,day,start,end,kind,activity}))},
+    trip:{startDate:ctx.trip.startDate,city:ctx.trip.destinationCity,items:ctx.trip.items.map(item=>{const{id,placeName,city,day,start,end,kind,activity}=item;return {id,placeName,city,day,start,end,kind,activity,window:transportWindow(item,ctx.trip.items),flexibleTransfer:flexibleTransfer(item),context:placeContext(item)};})},
     checks:ctx.state.checks.map(c=>({...c,searchedScope:c.searchedScope.slice(-3)})),questions:ctx.state.questions,
     chat:messages(ctx.trip.id).filter(m=>m.runId===ctx.run.id||m.role==='user').slice(-10).map(({role,text})=>({role,text})),
     judgments,delta:{updated:changes,removed:[...previous.keys()].filter(key=>!snapshot.has(key))},
