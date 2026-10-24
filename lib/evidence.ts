@@ -28,7 +28,7 @@ const authorityMedia = [
 const stateMediaLabel = /^[\u4e00-\u9fa5]{2,10}(?:日报|晚报|都市报|晨报|广播电视台|广播电视总台|电视台|融媒体中心|新闻网)(?:数字报|客户端|网)?$/;
 const commercialLabel = /百科|攻略|旅游|旅行|本地宝|门票|腾讯|新浪|搜狐|网易|凤凰|头条|百度|知乎|微博/;
 // Travel, ticketing and encyclopedia platforms: useful references that still need a second independent source.
-const platforms = ['ctrip.com', 'trip.com', 'mafengwo.cn', 'qyer.com', 'dianping.com', 'meituan.com', 'amap.com', 'qunar.com', 'map.baidu.com', 'baike.baidu.com', 'baike.sogou.com', 'baike.so.com', 'bendibao.com', 'ly.com', 'fliggy.com', 'tuniu.com', 'damai.cn', 'maoyan.com'];
+const platforms = ['ctrip.com', 'trip.com', 'mafengwo.cn', 'qyer.com', 'dianping.com', 'meituan.com', 'amap.com', 'map.qq.com', 'qunar.com', 'map.baidu.com', 'baike.baidu.com', 'baike.sogou.com', 'baike.so.com', 'bendibao.com', 'ly.com', 'fliggy.com', 'tuniu.com', 'damai.cn', 'maoyan.com'];
 export function sourceTier(domain: string, authority: number | null, officialDomain?: string | null, venueSites: string[] = [], label: string | null = null): 1 | 2 | 3 | 4 {
   if ((officialDomain && matchesDomain(domain, officialDomain)) || domain.endsWith('.gov.cn') || matchesDomain(domain, '12306.cn')) return 1;
   if (platforms.some(d => matchesDomain(domain, d))) return 3;
@@ -121,7 +121,18 @@ function requestPage(url: URL, address: { address: string; family: number }, tim
 }
 export type PageCheck = { linkStatus: LinkStatus; checkedAt: string; finalUrl: string; text: string; sha256: string | null };
 export function cachedLinkCheck(url:string) { return cacheGet<PageCheck>(`page:v2:${createHash('sha256').update(url).digest('hex')}`); }
+const pageReads=new WeakMap<AbortSignal,Map<string,Promise<PageCheck>>>();
 export async function checkLink(url: string, force = false): Promise<PageCheck> {
+  assertRunning();
+  const signal=runSignal();
+  if(!signal)return readPage(url,force);
+  const pending=pageReads.get(signal)??new Map<string,Promise<PageCheck>>();pageReads.set(signal,pending);
+  const key=`${Number(force)}:${url}`,shared=pending.get(key);
+  if(shared){recordMetric('page_shared',0);return shared;}
+  const request=readPage(url,force);pending.set(key,request);
+  try{return await request;}finally{pending.delete(key);}
+}
+async function readPage(url: string, force: boolean): Promise<PageCheck> {
   assertRunning();
   const key = `page:v2:${createHash('sha256').update(url).digest('hex')}`;
   const cached = !force && cacheGet<PageCheck>(key);

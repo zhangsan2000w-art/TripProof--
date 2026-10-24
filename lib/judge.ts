@@ -4,15 +4,12 @@ import { registrableDomain } from './evidence';
 import { createHash } from 'node:crypto';
 import { factSupported } from './facts';
 import { judgeSafety, riskKey } from './risk';
-import { unresolvedTarget, openArea, flexibleTransfer } from './itinerary';
+import { unresolvedTarget, openArea, flexibleTransfer, transportWindow } from './itinerary';
 function seasonLength(from: string, to: string) {
   const start = Date.parse(`2000-${from}`), end = Date.parse(`2000-${to}`);
   return ((end - start) / 86400000 + 366) % 366 + 1;
 }
 
-const dailyRule = /每日|每天|天天|全年无休|年中無休|全年开放(?!时间|時間)|全天开放|全天候|24\s*小[时時]|无闭馆日|不闭馆|周一至周日|周一到周日/;
-// "全年开放时间 9:00-17:00（周一闭馆）" names a closing day, so it is not an every-day rule.
-const daily = (quote: string) => dailyRule.test(quote) && !/闭馆|閉館|休馆|闭园|不开放|停止开放/.test(quote.replace(/无闭馆日|不闭馆/g, ''));
 type Resolution = { picked: Fact[]; overruled: Fact[]; error: 'NO_EVIDENCE' | 'WEAK_EVIDENCE' | 'SOURCES_DISAGREE' | 'LINK_REQUIRES_BROWSER' | null };
 function fingerprint(fact: Fact, date: string): string {
   if (fact.kind === 'temp_closure' || fact.kind === 'weekly_closure') return 'closed';
@@ -20,6 +17,8 @@ function fingerprint(fact: Fact, date: string): string {
   if (fact.kind === 'hours') { const s = fact.payload.seasons.find(s => inSeason(date, s.from, s.to)); return JSON.stringify(s && { open: s.open, close: s.close, lastEntry: s.lastEntry }); }
   if (fact.kind === 'temp_hours') return JSON.stringify({ open: fact.payload.open, close: fact.payload.close, lastEntry: fact.payload.lastEntry });
   if (fact.kind === 'reservation') return JSON.stringify({ required: fact.payload.required });
+  // Sources label directions and add notes differently; the timetable is what has to agree.
+  if (fact.kind === 'service_hours') return JSON.stringify({ first: fact.payload.first, last: fact.payload.last, lastDayOffset: fact.payload.lastDayOffset });
   return JSON.stringify(fact.payload);
 }
 /** Same reading of a rule, ignoring details (such as last entry) that some sources omit. */
@@ -28,9 +27,18 @@ function reading(fact: Fact, date: string): string {
   if (fact.kind === 'temp_hours') return JSON.stringify({ open: fact.payload.open, close: fact.payload.close });
   return fingerprint(fact, date);
 }
-export function resolveFacts(pool: Fact[], date: string, dossier: Dossier): Resolution {
-  const all = pool.filter(f => f.quoteVerified && f.venueMatch === 'exact' && f.linkStatus !== 'broken');
-  if (!all.length) return { picked: [], overruled: [], error: 'NO_EVIDENCE' };
+export function resolveFacts(pool: Fact[], date: string, dossier: Dossier, item?: Item): Resolution {
+  const usable = pool.filter(f => f.quoteVerified && f.venueMatch === 'exact' && f.linkStatus !== 'broken');
+  if (!usable.length) return { picked: [], overruled: [], error: 'NO_EVIDENCE' };
+  // A news report states the rule of its day. Over a year older than another source on the
+  // same question, it is outdated rather than authoritative; official sites are kept.
+  const latest = usable.map(f => f.publishedAt).filter((d): d is string => !!d).sort().at(-1);
+  const outdated = usable.filter(f => f.tier === 2 && !!f.publishedAt && !!latest && daysUntil(latest, f.publishedAt) > 365);
+  const all = outdated.length < usable.length ? usable.filter(f => !outdated.includes(f)) : usable;
+  const withOutdated = (r: Resolution): Resolution => ({ ...r, overruled: [...r.overruled, ...usable.filter(f => !all.includes(f) && !r.picked.includes(f) && !r.overruled.includes(f))] });
+  return withOutdated(resolveCurrent(all, date, dossier, item));
+}
+function resolveCurrent(all: Fact[], date: string, dossier: Dossier, item?: Item): Resolution {
   const reachable = all.filter(f => f.linkStatus === 'ok').filter(f => {
     if (f.kind !== 'hours') return true;
     const period = f.payload.seasons.find(s => inSeason(date,s.from,s.to));
@@ -38,11 +46,15 @@ export function resolveFacts(pool: Fact[], date: string, dossier: Dossier): Reso
     return !all.some(other => other.kind === 'hours' && other.evidenceId === f.evidenceId && other.payload.seasons.some(s => inSeason(date,s.from,s.to) && seasonLength(s.from,s.to) < seasonLength(period.from,period.to)));
   });
   if (!reachable.length) return { picked: all, overruled: [], error: 'LINK_REQUIRES_BROWSER' };
+  // A reprint shares a distinctive headline across sites; a short title that is only the
+  // place's name (as on encyclopedia and city-guide pages) says nothing about copying.
+  const names = new Set([dossier.venue.canonicalName, item?.placeName].filter((n): n is string => !!n).map(n => n.replace(/\s+/g, '')));
   const independentCount = (facts: Fact[]) => {
     const domains = new Set<string>(), titles = new Set<string>(); let count = 0;
     for (const f of facts) {
       const domain = registrableDomain(f.domain);
-      const title = dossier.evidence.find(e => e.id === f.evidenceId)?.title.replace(/\s+/g, '') || f.evidenceId;
+      const headline = dossier.evidence.find(e => e.id === f.evidenceId)?.title.replace(/\s+/g, '') ?? '';
+      const title = [...headline].length >= 12 && !names.has(headline) ? headline : `${domain}:${f.evidenceId}`;
       if (!domains.has(domain) && !titles.has(title)) { count++; domains.add(domain); titles.add(title); }
     }
     return count;
@@ -53,16 +65,16 @@ export function resolveFacts(pool: Fact[], date: string, dossier: Dossier): Reso
   };
   const topTier = Math.min(...reachable.map(f => f.tier));
   if (topTier >= 3) {
-    // Platform and web pages are dated by their crawl or edit, not by a rule change,
-    // so they are weighed by independent agreement: two platforms or three ordinary sites.
+    // Platform and web pages are dated by their crawl or edit, not by a rule change, so the
+    // reading most independent sites agree on wins. A single uncontested source still gives
+    // an answer; the report labels it as coming from one source.
     const readings = new Map<string, Fact[]>();
     for (const f of reachable) { const key = reading(f, date); readings.set(key, [...(readings.get(key) ?? []), f]); }
     const options = [...readings.values()].sort((a, b) => independentCount(b) - independentCount(a) || Math.min(...a.map(f => f.tier)) - Math.min(...b.map(f => f.tier)));
     if (options.length > 1 && independentCount(options[0]) === independentCount(options[1])) return { picked: reachable, overruled: all.filter(f => !reachable.includes(f)), error: 'SOURCES_DISAGREE' };
     const picked = [...options[0]].sort((a, b) => a.tier - b.tier || (b.publishedAt || '').localeCompare(a.publishedAt || ''));
     if (reservationsDisagree(picked)) return { picked, overruled: all.filter(f => !picked.includes(f)), error: 'SOURCES_DISAGREE' };
-    const strong = independentCount(picked) >= (picked[0].tier === 3 ? 2 : 3);
-    return { picked, overruled: all.filter(f => !picked.includes(f)), error: strong ? null : 'WEAK_EVIDENCE' };
+    return { picked, overruled: all.filter(f => !picked.includes(f)), error: null };
   }
   const ranked = reachable.filter(f => f.tier === topTier);
   const dated = ranked.filter(f => f.publishedAt);
@@ -80,11 +92,34 @@ export function resolveFacts(pool: Fact[], date: string, dossier: Dossier): Reso
 }
 function validOn(f: Fact, date: string) { return (!f.validFrom || f.validFrom <= date) && (!f.validTo || f.validTo >= date); }
 function shiftedClosure(f: Fact, date: string) {
-  if (f.kind !== 'weekly_closure' || !/闭馆(?:日)?顺延至节后第一天/.test(f.quote) || holidayState(date) === 'holiday' || holidayState(addDays(date,-1)) !== 'holiday') return false;
+  if (f.kind !== 'weekly_closure' || !f.payload.shiftsAfterHoliday || holidayState(date) === 'holiday' || holidayState(addDays(date,-1)) !== 'holiday') return false;
   for (let n=1;n<=14 && holidayState(addDays(date,-n)) === 'holiday';n++) if (f.payload.closedWeekdays.includes(weekday(addDays(date,-n)))) return true;
   return false;
 }
 function covers(f: Fact, date: string) { return 'from' in f.payload && 'to' in f.payload && typeof f.payload.from === 'string' && f.payload.from <= date && typeof f.payload.to === 'string' && f.payload.to >= date; }
+/** Different meal sessions and small closing-time differences need not make an agreed lunch slot unknown. */
+function commonHoursFit(item: Item, date: string, pool: Fact[], dossier: Dossier) {
+  if (!item.start) return null;
+  const resolution=resolveFacts(pool,date,dossier,item);
+  if(resolution.error!=='SOURCES_DISAGREE')return null;
+  const picked=resolution.picked;
+  const groups=new Map<string,Fact[]>();
+  for(const f of picked)groups.set(f.evidenceId,[...(groups.get(f.evidenceId)??[]),f]);
+  const tier=Math.min(...picked.map(f=>f.tier));
+  const domains=new Set(picked.map(f=>registrableDomain(f.domain)));
+  if(tier>2&&domains.size<2)return null;
+  const period=(f:Fact)=>f.kind==='temp_hours'?f.payload:f.kind==='hours'?f.payload.seasons.find(s=>inSeason(date,s.from,s.to)):null;
+  const fits=(f:Fact)=>{const p=period(f);if(!p)return false;const open=minutes(p.open),overnight=minutes(p.close)<open,shift=(v:string)=>minutes(v)+(overnight&&minutes(v)<open?1440:0),start=shift(item.start!),end=item.end?shift(item.end):start;return start>=open&&start<shift(p.close)&&end>=start&&end<=shift(p.close)&&(!p.lastEntry||start<shift(p.lastEntry));};
+  const supports=[...groups.values()].every(fs=>{
+    const periods=fs.map(period);if(periods.some(p=>!p))return false;
+    const quote=fs[0].quote.normalize('NFKC').replace(/\s+/g,'');
+    const sessions=fs.length>1&&fs.every(f=>f.quote.normalize('NFKC').replace(/\s+/g,'')===quote)
+      &&periods.every(p=>quote.includes(p!.open.replace(/^0/,''))&&quote.includes(p!.close.replace(/^0/,'')))
+      &&periods.every((p,index)=>periods.every((q,other)=>index===other||minutes(p!.close)<=minutes(q!.open)||minutes(q!.close)<=minutes(p!.open)));
+    return sessions?fs.some(fits):fs.every(fits);
+  });
+  return supports?resolution:null;
+}
 const reasonText: Record<string, string> = {
   NO_EVIDENCE: '没有找到适用于该日期且通过核验的规则。', WEAK_EVIDENCE: '现有来源的证据强度不足，需要向官方渠道核实。',
   SOURCES_DISAGREE: '同等级来源对这项规则存在无法裁决的矛盾，双方证据已保留。',
@@ -100,6 +135,7 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     return f.quoteVerified && f.venueMatch === 'exact' && f.linkStatus !== 'broken' && validOn(f, date) && (!evidence || factSupported(f, evidence));
   });
   const judgments: Judgment[] = [];
+  const window = transportWindow(item, trip.items);
   const make = (type: CheckType, verdict: Verdict, code: string, explanation: string, basis: Fact[] = [], overruled: Fact[] = [], notes: string[] = []) => {
     const judgment: Judgment = {
       id: createHash('sha256').update(`${item.id}:${type}:${date}:${verdict}:${code}:${basis.map(f => f.id).sort().join(',')}`).digest('hex').slice(0, 24),
@@ -109,7 +145,7 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     judgments.push(judgment); return judgment;
   };
   const resolve = (pool: Fact[], type: CheckType) => {
-    const r = dossier ? resolveFacts(pool, date, dossier) : { picked: [], overruled: [], error: 'NO_EVIDENCE' as const };
+    const r = dossier ? resolveFacts(pool, date, dossier, item) : { picked: [], overruled: [], error: 'NO_EVIDENCE' as const };
     if (r.error) { make(type, 'unknown', r.error, reasonText[r.error], r.picked, r.overruled); return null; }
     return r;
   };
@@ -118,7 +154,10 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
   const visitable = !unresolved && ['museum', 'scenic', 'show', 'restaurant', 'other'].includes(item.kind);
   if (visitable) {
     const specific = facts.filter(f => (f.kind === 'temp_open' || (f.kind === 'temp_closure' && f.payload.scope === 'whole')) && covers(f, date));
-    const openEnded = facts.filter(f=>f.kind==='temp_closure'&&f.payload.to===null&&f.payload.from<=date&&f.payload.scope==='whole');
+    // An older closure with no reopening date has ended once an official or authoritative page,
+    // dated after it began, shows the place running normally. Recent closures always stand.
+    const operating = (since: string, tier: number) => facts.some(o => ['hours', 'weekly_open', 'weekly_closure'].includes(o.kind) && o.linkStatus === 'ok' && o.tier <= Math.min(2, tier) && !!o.publishedAt && o.publishedAt > since);
+    const openEnded = facts.filter(f=>f.kind==='temp_closure'&&f.payload.to===null&&f.payload.from<=date&&f.payload.scope==='whole'&&!(daysUntil(f.payload.from) < -30 && operating(f.payload.from, f.tier)));
     const shifted = facts.filter(f => shiftedClosure(f,date));
     const closed = facts.filter(f => f.kind === 'weekly_closure' && (f.payload.closedWeekdays.includes(w) || shifted.includes(f)));
     // Published hours for this date also say the place opens that day when they are
@@ -127,9 +166,12 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     // non-museums, and only when no source mentions a weekly closure.
     const closureSources = new Set(facts.filter(f => f.kind === 'weekly_closure').map(f => f.evidenceId));
     const implied = facts.filter(f => f.kind === 'hours' && (!f.payload.weekdays || f.payload.weekdays.includes(w)) && f.payload.seasons.some(s => inSeason(date, s.from, s.to))
-      && (f.payload.weekdays !== null || daily(f.quote) || (closureSources.has(f.evidenceId) ? !closed.some(c => c.evidenceId === f.evidenceId) : !closureSources.size && item.kind !== 'museum')))
+      && (f.payload.weekdays !== null || (closureSources.has(f.evidenceId) ? !closed.some(c => c.evidenceId === f.evidenceId) : !closureSources.size && item.kind !== 'museum')))
       .map(f => ({ ...f, kind: 'weekly_open', payload: { weekdays: [0, 1, 2, 3, 4, 5, 6], exceptStatutoryHolidays: false } }) as Fact);
-    const open = [...facts.filter(f => f.kind === 'weekly_open' && f.payload.weekdays.includes(w)), ...implied];
+    // A source that names its closing days says the other days are open, even without hours.
+    const openBesides = facts.filter(f => f.kind === 'weekly_closure' && !closed.includes(f) && !facts.some(h => h.kind === 'hours' && h.evidenceId === f.evidenceId && implied.some(i => i.id === h.id)))
+      .map(f => ({ ...f, kind: 'weekly_open', payload: { weekdays: [0, 1, 2, 3, 4, 5, 6].filter(d => f.kind === 'weekly_closure' && !f.payload.closedWeekdays.includes(d)), exceptStatutoryHolidays: f.kind === 'weekly_closure' && f.payload.exceptStatutoryHolidays } }) as Fact);
+    const open = [...facts.filter(f => f.kind === 'weekly_open' && f.payload.weekdays.includes(w)), ...implied, ...openBesides];
     const uncertainHoliday = [...closed, ...open].some(f => (f.kind === 'weekly_open' || f.kind === 'weekly_closure') && f.payload.exceptStatutoryHolidays && holiday === 'unpublished');
     const regular = [...closed, ...open].filter(f => !((f.kind === 'weekly_open' || f.kind === 'weekly_closure') && f.payload.exceptStatutoryHolidays && holiday === 'holiday'));
     const partial = facts.filter(f => f.kind === 'temp_closure' && f.payload.scope === 'partial' && covers(f, date));
@@ -145,6 +187,8 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
       }
     }
     else if (!specific.length && uncertainHoliday) make('open_on_date', 'unknown', 'HOLIDAY_SCHEDULE_NOT_PUBLISHED', reasonText.HOLIDAY_SCHEDULE_NOT_PUBLISHED, [...closed, ...open]);
+    // A public street or waterfront has no closing day; with no notice against it, it is open.
+    else if (openArea(item) && !specific.length && !shifted.length && !regular.length) make('open_on_date', 'confirmed', 'PUBLIC_AREA', '公共区域，没有闭馆日；其中的场馆和店铺按各自时间。', [], [], ['按攻略里这站的性质判断，未查到针对这里的开放规则或关闭公告。'])
     else {
       const r = resolve(specific.length ? specific : shifted.length ? shifted : regular, 'open_on_date');
       if (r) {
@@ -157,9 +201,11 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     }
     const temporaryHours = facts.filter(f => f.kind === 'temp_hours' && covers(f, date));
     const regularHours = facts.filter(f => f.kind === 'hours' && (!f.payload.weekdays || f.payload.weekdays.includes(w)) && f.payload.seasons.some(s => inSeason(date, s.from, s.to)));
-    if (!item.start) {
+    if (openArea(item) && !temporaryHours.length && !regularHours.length) {
+      make('hours_fit', 'confirmed', 'PUBLIC_AREA', '公共区域，任何时间都可以去；其中的场馆和店铺按各自时间。', [], [], ['按攻略里这站的性质判断，未查到针对这里的开放时间。']);
+    } else if (!item.start) {
       const pool = temporaryHours.length ? temporaryHours : regularHours;
-      const r = dossier ? resolveFacts(pool, date, dossier) : { picked: [], overruled: [], error: 'NO_EVIDENCE' as const };
+      const r = dossier ? resolveFacts(pool, date, dossier, item) : { picked: [], overruled: [], error: 'NO_EVIDENCE' as const };
       const f = r.picked[0], p = f?.kind === 'temp_hours' ? f.payload : f?.kind === 'hours' ? f.payload.seasons.find(s => inSeason(date, s.from, s.to)) : null;
       const known = !r.error && p;
       if (known && p.open === '00:00' && ['24:00', '23:59'].includes(p.close)) {
@@ -169,7 +215,10 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
       j.ruleStatus = known ? 'verified' : r.picked.length ? 'reference' : 'unresolved';
       }
     } else {
-      const r = resolve(temporaryHours.length ? temporaryHours : regularHours, 'hours_fit');
+      const pool=temporaryHours.length ? temporaryHours : regularHours;
+      const common=dossier?commonHoursFit(item,date,pool,dossier):null;
+      if(common)make('hours_fit','confirmed','HOURS_FIT_COMMON',`来源列出的具体营业时段存在差别，但都覆盖你安排的 ${item.start}${item.end?`—${item.end}`:''}；该计划时段符合已核实范围。`,common.picked,common.overruled,['各来源的原始营业时段分别保留；未把午市和晚市之间的休息时段算作营业。']);
+      const r = common?null:resolve(pool, 'hours_fit');
       if (r) {
         const f = r.picked[0];
         const hours = f.kind === 'temp_hours' ? f.payload : f.kind === 'hours' ? f.payload.seasons.find(s => inSeason(date, s.from, s.to))! : null;
@@ -179,14 +228,17 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
           const start = minutes(item.start) + (overnight && minutes(item.start) < open ? 1440 : 0);
           const end = item.end ? minutes(item.end) + (overnight && minutes(item.end) < open ? 1440 : 0) : null;
           const entry = hours.lastEntry ? minutes(hours.lastEntry) + (overnight && minutes(hours.lastEntry) < open ? 1440 : 0) : null;
-          const additionalEntry = entry === null ? facts.filter(other => {
+          // Other sources giving the same window may add a last-entry time the chosen one lacks.
+          const cutoffOf = (other: Fact) => {
             const p = other.kind === 'temp_hours' && covers(other, date) ? other.payload : other.kind === 'hours' && (!other.payload.weekdays || other.payload.weekdays.includes(w)) ? other.payload.seasons.find(s => inSeason(date, s.from, s.to)) : null;
-            return p && p.open === hours.open && p.close === hours.close && p.lastEntry && minutes(item.start!) >= minutes(p.lastEntry);
-          }) : [];
+            return p && p.open === hours.open && p.close === hours.close && p.lastEntry ? minutes(p.lastEntry) : null;
+          };
+          const additionalEntry = entry === null ? facts.filter(other => { const c = cutoffOf(other); return c !== null && minutes(item.start!) >= c; }) : [];
+          const laterEntry = entry === null && facts.some(other => { const c = cutoffOf(other); return c !== null && minutes(item.start!) < c; });
           if (start < open || start >= close || (end !== null && (end > close || end < start))) make('hours_fit', 'conflict', 'OUTSIDE_HOURS', `计划时段超出已核实的 ${hours.open}—${hours.close} 开放窗口。`, r.picked, r.overruled);
           else if (additionalEntry.length) {
             const cutoff = resolveFacts(additionalEntry, date, dossier!);
-            if (!cutoff.error) make('hours_fit', 'conflict', 'AFTER_LAST_ENTRY', '计划到达时间已到或超过补充来源中核实的停止入场时间。', [...r.picked, ...cutoff.picked], cutoff.overruled);
+            if (!cutoff.error && !laterEntry) make('hours_fit', 'conflict', 'AFTER_LAST_ENTRY', '计划到达时间已到或超过补充来源中的停止入场时间。', [...r.picked, ...cutoff.picked], cutoff.overruled);
             else make('hours_fit', 'unknown', 'LAST_ENTRY_UNVERIFIED', '计划接近闭园；补充资料提示已停止入场，但该截止时间尚未得到足够佐证，请先向景区确认。', [...r.picked, ...cutoff.picked], cutoff.overruled);
           }
           else if (entry !== null && start >= entry) make('hours_fit', 'conflict', 'AFTER_LAST_ENTRY', `计划 ${item.start} 到达，已到或超过 ${hours.lastEntry} 的停止入场时间。`, r.picked, r.overruled);
@@ -216,8 +268,10 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     if (r) {
       const f = r.picked[0];
       if (f.kind === 'reservation') {
-        const relevant = r.picked.filter((f): f is Fact & {kind:'reservation'} => f.kind === 'reservation').sort((a,b)=>(b.publishedAt || '').localeCompare(a.publishedAt || ''));
-        const p = { ...f.payload, advanceDays: relevant.find(f=>f.payload.advanceDays!==null)?.payload.advanceDays ?? null, releaseTime: relevant.find(f=>f.payload.releaseTime!==null)?.payload.releaseTime ?? null, channel: [...new Set(relevant.map(f=>f.payload.channel).filter(Boolean))].join(' / ') || null };
+        // The newest rule (by when it takes effect, else when published) supplies each detail.
+        const since = (f: Fact) => f.validFrom || f.publishedAt || '';
+        const relevant = r.picked.filter((f): f is Fact & {kind:'reservation'} => f.kind === 'reservation').sort((a,b)=>since(b).localeCompare(since(a)));
+        const p = { ...f.payload, advanceDays: relevant.find(f=>f.payload.advanceDays!==null)?.payload.advanceDays ?? null, releaseTime: relevant.find(f=>f.payload.releaseTime!==null)?.payload.releaseTime ?? null, channel: relevant.find(f=>f.payload.channel)?.payload.channel ?? null };
         const releaseDay = p.advanceDays !== null && p.releaseTime ? addDays(date, -p.advanceDays) : null;
         const release = releaseDay ? releaseDay < today() ? `；按原文提前天数计算，已于 ${releaseDay} ${p.releaseTime} 开始放票，尽快查看是否还有名额` : releaseDay === today() ? `；今天 ${p.releaseTime} 放票` : `；按原文提前天数计算，关注 ${releaseDay} ${p.releaseTime} 放票` : '';
         make('reservation_rule', 'confirmed', p.required ? 'RESERVATION_REQUIRED' : 'NO_RESERVATION_REQUIRED', p.required ? `需提前预约${release}${p.channel ? `，渠道：${p.channel}` : ''}。此结论不表示已有名额或已完成预约。` : '已核实的规则说明无需预约，实时运营变更仍以官方渠道为准。', r.picked, r.overruled);
@@ -230,7 +284,15 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     if (r) {
       const f = r.picked[0];
       if (f.kind === 'service_hours') {
-        if (!item.start) make('service_hours', 'unknown', 'MISSING_TIME', `查到运营信息，但未提供计划乘车时间；末班参考 ${f.payload.last}${f.payload.lastDayOffset ? '（次日）' : ''}。`, r.picked, r.overruled);
+        if (!item.start && window) {
+          const first=f.payload.first?minutes(f.payload.first):0,last=minutes(f.payload.last)+f.payload.lastDayOffset*1440;
+          const start=minutes(window.start)+(f.payload.lastDayOffset&&minutes(window.start)<first?1440:0);
+          const end=minutes(window.end)+(minutes(window.end)<minutes(window.start)?1440:0)+(f.payload.lastDayOffset&&minutes(window.start)<first?1440:0);
+          const outside=start>last||end<first,inside=!!f.payload.first&&start>=first&&end<=last;
+          make('service_hours',outside?'conflict':inside?'confirmed':'unknown',outside?'OUTSIDE_SERVICE_HOURS':inside?'SERVICE_WINDOW_FIT':'SERVICE_WINDOW_PARTIAL',
+            `这段交通已包含在 ${window.start}—${window.end} 的安排中，${outside?'与运营时间不相交':inside?'整个安排窗口在运营时间内':'仅部分窗口能与已查到的运营时间对应'}；运营时间 ${f.payload.first??'首班未注明'}—${f.payload.last}${f.payload.lastDayOffset?'（次日）':''}。${inside?'无需再补一个精确乘车时刻；具体班次、候船和停航仍以当天运营为准。':'请按实际班次调整转场，未把整个活动时段当成乘车时间。'}`,r.picked,r.overruled);
+        }
+        else if (!item.start) make('service_hours', 'unknown', 'MISSING_TIME', `查到运营信息，但未提供计划乘车时间；末班参考 ${f.payload.last}${f.payload.lastDayOffset ? '（次日）' : ''}。`, r.picked, r.overruled);
         else {
           const first = f.payload.first ? minutes(f.payload.first) : 0;
           const start = minutes(item.start) + (f.payload.lastDayOffset && minutes(item.start) < first ? 1440 : 0);
@@ -240,7 +302,7 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
         }
       }
     }
-    make('availability', 'unknown', 'REALTIME', '余票、实时晚点及路况无法由网页搜索确认，请到12306、承运方或地图渠道核实。');
+    make('availability', 'unknown', flexibleTransfer(item)?'LIVE_TRAFFIC':'REALTIME', flexibleTransfer(item)?'步行或打车按游览进度出发，无需核对首末班；路况、候车和上车位置以当天地图导航或现场为准。':item.profile?.mode==='rail'?'余票、实时晚点无法由网页搜索确认，请到12306或承运方核实。':'运营时间不代表已经有票或一定能登乘；班次、排队及临时停运请在出发当天向运营方核实。');
     const duration = facts.filter(f => f.kind === 'transport_duration');
     if (duration.length) {
       const r = resolve(duration, 'hours_fit');
@@ -251,7 +313,7 @@ export function judgeItem(item: Item, trip: TripInput, dossier?: Dossier): Judgm
     }
   }
   const lastDay = Math.max(...trip.items.map(i => i.day));
-  if ((item.day === 1 && trip.arriveDay1) || (item.day === lastDay && trip.leaveLastDay)) {
+  if (!window && !flexibleTransfer(item) && ((item.day === 1 && trip.arriveDay1) || (item.day === lastDay && trip.leaveLastDay))) {
     if (!item.start) make('arrival_fit', 'unknown', 'MISSING_TIME', '缺少计划时间，无法核对抵达或离开边界。');
     else if (item.day === 1 && trip.arriveDay1 && minutes(item.start) < minutes(trip.arriveDay1)) make('arrival_fit', 'conflict', 'BEFORE_ARRIVAL', `计划 ${item.start} 开始，早于你填写的抵达时间 ${trip.arriveDay1}。`);
     else if (item.day === lastDay && trip.leaveLastDay && minutes(item.end ?? item.start) > minutes(trip.leaveLastDay)) make('arrival_fit', 'conflict', 'AFTER_DEPARTURE', `计划时段晚于你填写的离开时间 ${trip.leaveLastDay}。`);
@@ -293,7 +355,7 @@ export function judgeTrip(trip: TripInput, dossiers: Dossier[]): Judgment[] {
   }), ...judgeConnections(trip,dossiers)];
 }
 export function judgeConnections(trip:TripInput,dossiers:Dossier[]):Judgment[] {
-  const ordered=[...trip.items].sort((a,b)=>a.day-b.day||a.seq-b.seq);
+  const ordered=[...trip.items].filter(item=>!transportWindow(item,trip.items)).sort((a,b)=>a.day-b.day||a.seq-b.seq);
   return ordered.flatMap<Judgment>((item,index)=>{
     const previous=ordered[index-1];if(!previous||previous.day!==item.day||previous.placeName===item.placeName)return [];
     const date=dateForDay(trip.startDate,item.day);

@@ -24,8 +24,8 @@ export default function Home() {
       </div>
       <HomeForm/>
     </section>
-    {samples.length > 0 && <section className="samples page" aria-label="真实攻略的核对结果">
-      <div className="section-head"><h2>真实攻略的核对结果</h2><span>{samples.length} 份小红书攻略，点开即看，无需等待</span></div>
+    {samples.length > 0 && <section className="samples page" aria-label="真实核对结果">
+      <div className="section-head"><h2>真实核对结果</h2><span>{samples.length} 份攻略已逐站查过，点开即看，无需等待</span></div>
       <div className="sample-grid">{samples.map(s => <Link key={s.shareId} href={`/r/${s.shareId}`} className={`card sample-card tone-${s.tone}`}>
         <span className="sample-meta">{s.city} · {monthDay(s.startDate)}{s.days > 1 ? `—${monthDay(sampleEndDate(s))}` : ''} · {s.stops} 个地点</span>
         <h3>{s.title}</h3>

@@ -1,26 +1,28 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { emit, finishRun, getRun, getTrip, id, listCalls } from './store';
+import { emit, finishRun, getRun, getRunProgress, getTrip, id, listCalls } from './store';
 import { dateForDay, daysUntil, now } from './dates';
 import type { Alternative, Dossier, Evidence, Item, Run, RunResult, Trip, SearchParams } from './domain';
 import { emptyResult, kinds } from './domain';
-import { searchPro } from './search/yuanbao';
+import { searchSources } from './search';
+import { providerCount } from './search/config';
 import { verifyEvidence } from './evidence';
 import { corroboratesClaim } from './announcements';
-import { extractAdvisories, extractFacts, extractWeatherFacts, hasRiskWords, supportedDossierFacts } from './facts';
+import { extractAdvisories, extractFacts, extractWeatherFacts, supportedDossierFacts } from './facts';
 import { hazardWindowDays, riskKey } from './risk';
 import { judgeItem } from './judge';
 import { AppError, errorMessage } from './errors';
 import { redact, structured } from './llm';
-import { mapLimit, Semaphore } from './concurrency';
+import { mapLimit, Semaphore, concurrencySetting } from './concurrency';
 import { searchName, selectVenueSources } from './source-selection';
 import { unresolvedTarget } from './itinerary';
 import { withRunControl } from './run-control';
 import { checkpoint, saveCheckpoint, sourceSnapshot } from './agent-store';
 import { recalculateReport } from './report';
 
-export const links = new Semaphore(8,'page_queue');
-export const models = new Semaphore(3,'model_queue');
+export const links = new Semaphore(concurrencySetting('PAGE_CONCURRENCY',12),'page_queue');
+export const models = new Semaphore(concurrencySetting('LLM_FACT_CONCURRENCY',6),'model_queue');
+export const planners = new Semaphore(concurrencySetting('LLM_PLANNER_CONCURRENCY',1,8),'planner_queue');
 function candidateDomain(pages: Evidence[], name: string) {
   const excluded = /(?:baidu|ctrip|bendibao|dianping|mafengwo|qunar|sohu|163|qq|sina|xiaohongshu|douyin|meituan)\./;
   const key = name.replace(/[（(].*?[）)]/g, '').replace(/博物馆|景区|公园/g, '');
@@ -32,11 +34,11 @@ export async function investigateVenue(runId: string, item: Item, city: string, 
   const unresolved = unresolvedTarget(item);
   if (unresolved) return { venue: { id: vid, key, canonicalName: item.placeName, city, officialDomain: null, officialEvidenceId: null, investigationDates: dates }, facts: [], evidence: [], calls: [], searchedScope: [], limitations: [unresolved.message], createdAt: now() };
   const dossier: Dossier = { venue: { id: vid, key, canonicalName: item.placeName, city, officialDomain: null, officialEvidenceId: null, investigationDates: dates }, facts: [], evidence: [], calls: [], searchedScope: [], limitations: [], createdAt: now() };
-  const venueCalls = { used: 0 }, pages: Evidence[] = [];
+  const venueCalls = { used: 0, limit: cap }, pages: Evidence[] = [];
   if (cap < 1) { dossier.limitations.push('本次搜索额度已分给其他地点，这一站未检索；可以单独重新检查。'); return dossier; }
   const search = async (params: SearchParams) => {
     dossier.searchedScope.push(`${params.query}${params.site ? ` · 站点 ${params.site}` : ''}${params.freshness ? ` · 时间范围 ${params.freshness}` : ''}`);
-    try { const r = await searchPro(runId, vid, params, venueCalls); pages.push(...r.pages); return r.pages; }
+    try { const r = await searchSources(runId, vid, params, venueCalls); pages.push(...r.pages); dossier.limitations.push(...r.limitations); return r.pages; }
     catch (error) { dossier.limitations.push(error instanceof AppError ? error.message : '该次搜索未完成。'); return []; }
   };
   const transport = item.kind === 'transport', mainName = searchName(item.placeName);
@@ -49,7 +51,7 @@ export async function investigateVenue(runId: string, item: Item, city: string, 
     { query: `${qcity} ${qname} ${item.kind === 'transport' ? '停运 运营调整' : '临时闭馆'} ${month}`, freshness: 'm2', industry: 'news' },
     ...(['museum', 'scenic', 'show'].includes(item.kind) ? [{ query: `${qcity} ${qname} 预约 提前 放票`, ...(domain ? { site: domain } : {}) }] : []),
     ...(domain ? [{ query: `${qname} 闭馆 公告`, site: domain, freshness: 'm3' }] : []),
-  ].slice(0, Math.max(0, cap - 1));
+  ].slice(0, Math.max(0, Math.floor((cap - venueCalls.used) / providerCount())));
   await Promise.all(followups.map(search));
   // Verify a bounded set of URLs, rather than opening every search hit.
   const selected = selectVenueSources(pages, item.placeName, city, domain, 8, transport);
@@ -71,7 +73,7 @@ export async function investigateVenue(runId: string, item: Item, city: string, 
       }
     }
   } catch (error) { dossier.limitations.push(errorMessage(error)); }
-  dossier.calls = listCalls(runId).filter(c => c.venueId === vid);
+  dossier.calls = listCalls(runId, vid);
   dossier.limitations = [...new Set(dossier.limitations)];
   for (const fact of dossier.facts) emit(runId, 'fact', fact);
   return dossier;
@@ -83,8 +85,8 @@ export async function investigateWeather(runId: string, city: string, date: stri
   const query = `${redact(city)} ${date} 天气 预报`;
   d.searchedScope.push(`${query} · 最近2天`);
   try {
-    const response = await searchPro(runId, vid, { query, freshness: 'd2' }, { used: 0 });
-    d.calls.push(response.call);
+    const response = await searchSources(runId, vid, { query, freshness: 'd2' }, { used: 0 });
+    d.calls.push(...response.calls); d.limitations.push(...response.limitations);
     d.evidence = await mapLimit(response.pages.slice(0, 3), 3, e => links.run(() => verifyEvidence(e, city,true)));
     for (const e of d.evidence) emit(runId, 'evidence', e);
     d.facts = await models.run(() => extractWeatherFacts(vid, city, date, d.evidence));
@@ -106,15 +108,16 @@ export async function searchRisk(runId: string, city: string, dates: string[]): 
   const calls = { used: 0 }, pages: Evidence[] = [];
   await Promise.all(queries.map(async params => {
     d.searchedScope.push(`${params.query} · 最近7天`);
-    try { pages.push(...(await searchPro(runId, vid, params, calls)).pages); }
+    try { const response = await searchSources(runId, vid, params, calls); pages.push(...response.pages); d.limitations.push(...response.limitations); }
     catch (error) { d.limitations.push(error instanceof AppError ? error.message : '预警搜索未完成。'); }
   }));
   const place = city.replace(/市$/, '');
-  const candidates = [...new Map(pages.filter(hasRiskWords).map(p => [p.url, p])).values()]
+  // The queries already ask for warnings and closures; the reader decides what each page says.
+  const candidates = [...new Map(pages.map(p => [p.url, p])).values()]
     .sort((a, b) => Number(`${b.title}${b.passage}`.includes(place)) - Number(`${a.title}${a.passage}`.includes(place)));
   d.evidence = await mapLimit(candidates.slice(0, 6), 4, e => links.run(() => verifyEvidence(e, place,true)));
   for (const e of d.evidence) emit(runId, 'evidence', e);
-  d.calls = listCalls(runId).filter(c => c.venueId === vid);
+  d.calls = listCalls(runId, vid);
   if(d.limitations.length)d.contextStatus='failed';
   return d;
 }
@@ -124,13 +127,13 @@ export async function readRisk(runId: string, trip: Trip, risk: Dossier, dossier
   if (!dates.some(date => daysUntil(date) >= 0 && daysUntil(date) <= hazardWindowDays)) return;
   const items = trip.items.filter(i => (i.city || trip.destinationCity) === city);
   const places = [...new Map(items.map(i => [i.placeName, { place: i.placeName, kind: i.kind, note: `${i.activity} ${i.sourceText}`.replace(/\s+/g, ' ').slice(0, 120) }])).values()];
-  const notice = /台风|暴雨|暴雪|预警|应急响应|临时关闭|暂时关闭|暂停开放|停航|停运|封闭/;
-  const recent = (e: Evidence) => !e.publishedAt || daysUntil(e.publishedAt) >= -30;
+  // Notices are recent by nature: pages found while checking venues join in only when dated this month.
+  const recent = (e: Evidence) => !!e.publishedAt && daysUntil(e.publishedAt) >= -30;
   const found = dossiers.filter(d => d !== risk && d.venue.city === city).flatMap(d => d.evidence)
-    .filter(e => e.linkStatus !== 'broken' && recent(e) && notice.test(`${e.title} ${e.passage}`));
-  const pool = [...new Map([...risk.evidence, ...found].map(e => [e.url, e])).values()]
-    .filter(e=>!risk.advisoryReadKeys?.includes(sourceSnapshot(e)))
-    .sort((a, b) => a.tier - b.tier || Number(notice.test(b.title)) - Number(notice.test(a.title)) || (b.publishedAt ?? '').localeCompare(a.publishedAt ?? '')).slice(0, 14);
+    .filter(e => e.linkStatus !== 'broken' && recent(e));
+  const fresh = (list: Evidence[]) => list.filter(e => !risk.advisoryReadKeys?.includes(sourceSnapshot(e)));
+  const byTier = (a: Evidence, b: Evidence) => a.tier - b.tier || (b.publishedAt ?? '').localeCompare(a.publishedAt ?? '');
+  const pool = [...new Map([...fresh(risk.evidence).sort(byTier), ...fresh(found).sort(byTier)].map(e => [e.url, e])).values()].slice(0, 14);
   if (!pool.length) {if(risk.contextStatus!=='failed')risk.contextStatus='complete';return;}
   try {
     const out = await models.run(() => extractAdvisories(risk.venue.id, city, dates, places, pool));
@@ -167,8 +170,8 @@ export async function investigateAlternatives(run: Run, trip: Trip, cap=2): Prom
   if (!target) throw new AppError('ITEM_NOT_FOUND', '找不到需要替代的行程项。', 404);
   const city = target.city || trip.destinationCity, vid = venueId(`alternatives:${city}:${target.placeName}`);
   emit(run.id, 'plan', { message: `寻找「${target.placeName}」的同城替代场馆，并独立核查。` });
-  const response = await searchPro(run.id, vid, { query: `${redact(city)} ${target.kind === 'museum' ? '博物馆' : target.kind === 'show' ? '演出场馆' : '景点'} ${target.kind === 'museum' ? '参观' : '游览'} 开放` }, { used: 0 });
-  result.dossiers.push({ venue: { id: vid, key: `alternatives:${city}:${target.placeName}`, canonicalName: `${target.placeName}的替代场馆检索`, city, officialDomain: null, officialEvidenceId: null, investigationDates: [dateForDay(trip.startDate, target.day)] }, facts: [], evidence: [], calls: [response.call], searchedScope: [response.call.query], limitations: [], createdAt: now() });
+  const response = await searchSources(run.id, vid, { query: `${redact(city)} ${target.kind === 'museum' ? '博物馆' : target.kind === 'show' ? '演出场馆' : '景点'} ${target.kind === 'museum' ? '参观' : '游览'} 开放` }, { used: 0 });
+  result.dossiers.push({ venue: { id: vid, key: `alternatives:${city}:${target.placeName}`, canonicalName: `${target.placeName}的替代场馆检索`, city, officialDomain: null, officialEvidenceId: null, investigationDates: [dateForDay(trip.startDate, target.day)] }, facts: [], evidence: [], calls: response.calls, searchedScope: [...new Set(response.calls.map(call => call.query))], limitations: response.limitations, createdAt: now() });
   const candidatesSchema = z.object({ candidates: z.array(z.object({ name: z.string(), city:z.string(),kind:z.enum(kinds), reason: z.string(), sourceIndex: z.number().int().min(0) })).max(2) });
   const candidates = await models.run(() => structured('fact', candidatesSchema, '从搜索资料中选择最多两个同城同类的真实替代场馆，不能选择原场馆，不要推断距离、可达性或可预约库存。sourceIndex必须是搜索结果索引。没有合适候选返回空数组。', [{ type: 'input_text', text: JSON.stringify({ city, original: target.placeName, kind: target.kind, sources: response.pages.map((p, index) => ({ index, title: p.title, text: p.passage, url: p.url })) }) }], 2000));
   const unique=[...new Map(candidates.candidates.map(c=>[c.name,c])).values()];
@@ -186,13 +189,13 @@ export async function executeRun(run: Run) {
   let result = run.result ?? emptyResult();
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(new AppError('AGENT_TIMEOUT','调查达到八分钟活动执行上限，已有证据已保留。',504)),Math.max(1,480000-(checkpoint(run.id)?.elapsedMs??0)));
-  const cancellation=setInterval(()=>{if(getRun(run.id).status==='cancelled')controller.abort(new AppError('RUN_CANCELLED','调查已停止。',409));},500);
-  const heartbeat = setInterval(() => { try { if(getRun(run.id).status==='running')emit(run.id, 'budget', { used: getRun(run.id).used, limit: run.limit, heartbeat: true }); } catch { /* Worker shutdown. */ } }, 20000);
+  const cancellation=setInterval(()=>{if(getRunProgress(run.id).status==='cancelled')controller.abort(new AppError('RUN_CANCELLED','调查已停止。',409));},500);
+  const heartbeat = setInterval(() => { try { const progress=getRunProgress(run.id);if(progress.status==='running')emit(run.id, 'budget', { used: progress.used, limit: run.limit, heartbeat: true }); } catch { /* Worker shutdown. */ } }, 20000);
   try {
     const trip = getTrip(run.tripId);
     if(!checkpoint(run.id))emit(run.id,'agent_progress',{stage:'run_queue',ms:Date.parse(run.startedAt??now())-Date.parse(run.createdAt)});
     if (trip.revision !== run.tripRevision) throw new AppError('TRIP_CHANGED', '行程在调查启动前发生修改，请重新检查。', 409);
-    await withRunControl({signal:controller.signal,metric:(stage,ms,detail)=>{if(getRun(run.id).status==='running')emit(run.id,'agent_progress',{stage,ms,...detail});}},async()=>{
+    await withRunControl({signal:controller.signal,metric:(stage,ms,detail)=>{if(getRunProgress(run.id).status==='running')emit(run.id,'agent_progress',{stage,ms,...detail});}},async()=>{
       if(run.kind==='investigation'){
         const {executeAgent}=await import('./agent');
         const status=await executeAgent(run,trip);result=getRun(run.id).result??result;

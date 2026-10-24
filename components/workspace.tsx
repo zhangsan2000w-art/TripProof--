@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowRight, RefreshCw, Share2, FileDown, Search, LoaderCircl
 import type { TripState, Item, Judgment, Operation, RunEvent, RunResult, Trip, SearchCall, Alternative, GuideSummary } from '@/lib/domain';
 import { GuideCard, GuideViewer } from './guide-view';
 import { api } from '@/lib/client';
+import { applyRunEvent } from '@/lib/live-state';
 import { dateForDay, weekdayLabel, localTime } from '@/lib/dates';
 import { prepareImages } from '@/lib/images-client';
 import { Header } from './brand';
@@ -25,9 +26,21 @@ export function Workspace({ tripId }: { tripId: string }) {
   const [alternativeModal, setAlternativeModal] = useState(false), [guide, setGuide] = useState<GuideSummary | null>(null), [viewing, setViewing] = useState<number | null>(null);
   const [timeModal, setTimeModal] = useState(false), [planStart, setPlanStart] = useState(''), [planEnd, setPlanEnd] = useState('');
   const noticeUpload = useRef<HTMLInputElement>(null);
+  const eventHistory=useRef<RunEvent[]>([]),lastEventAt=useRef(Date.now()),refreshing=useRef<Promise<void>|null>(null);
   const refresh = useCallback(async () => {
-    try { const next = await api<TripState>(`/api/trips/${tripId}`); setState(next); setSelected(current => next.trip.items.some(i => i.id === current) ? current : next.trip.items[0]?.id ?? ''); setEvents(current => { const map = new Map([...current, ...next.events].map(e => [e.id, e])); return [...map.values()].sort((a, b) => a.id - b.id); }); }
-    catch (error) { setError((error as Error).message); }
+    if(refreshing.current)return refreshing.current;
+    const task=(async()=>{
+      try {
+        const after=eventHistory.current.at(-1)?.id??0;
+        const next=await api<TripState>(`/api/trips/${tripId}?after=${after}`);
+        const snapshotAfter=Math.max(after,...next.events.map(e=>e.id));
+        setState(eventHistory.current.filter(e=>e.id>snapshotAfter).reduce(applyRunEvent,next));
+        setSelected(current=>next.trip.items.some(i=>i.id===current)?current:next.trip.items[0]?.id??'');
+        eventHistory.current=[...new Map([...eventHistory.current,...next.events].map(e=>[e.id,e])).values()].sort((a,b)=>a.id-b.id);
+        setEvents(eventHistory.current);
+      }catch(error){setError((error as Error).message);}
+    })();
+    refreshing.current=task;try{await task;}finally{refreshing.current=null;}
   }, [tripId]);
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {
@@ -38,20 +51,26 @@ export function Workspace({ tripId }: { tripId: string }) {
   // The submitted guide never changes, so it is read once.
   useEffect(() => { if (shareId) api<{ guide: GuideSummary | null }>(`/api/reports/${shareId}/guide`).then(r => setGuide(r.guide), () => setGuide(null)); }, [shareId]);
   const busy = state?.run?.status === 'queued' || state?.run?.status === 'running';
-  useEffect(() => { if (!busy) return; const interval = setInterval(refresh, 2200); return () => clearInterval(interval); }, [busy, refresh]);
+  useEffect(() => { if (!busy) return; const interval=setInterval(()=>{if(Date.now()-lastEventAt.current>30000)void refresh();},15000);return()=>clearInterval(interval); }, [busy, refresh]);
   useEffect(() => {
     if (!state?.run || !['queued', 'running'].includes(state.run.status)) return;
     const after=Math.max(0,...events.filter(e=>e.runId===state.run!.id).map(e=>e.id),...state.events.map(e=>e.id));
     const source = new EventSource(`/api/runs/${state.run.id}/events?after=${after}`);
+    let fallback:ReturnType<typeof setTimeout>|undefined;
+    lastEventAt.current=Date.now();
     source.onmessage = event => {
       try {
         const data: RunEvent = JSON.parse(event.data);
-        setEvents(current => current.some(e => e.id === data.id) ? current : [...current, data]);
+        lastEventAt.current=Date.now();clearTimeout(fallback);fallback=undefined;
+        if(!eventHistory.current.some(e=>e.id===data.id)){
+          eventHistory.current=[...eventHistory.current,data];setEvents(eventHistory.current);
+          setState(current=>current?applyRunEvent(current,data):current);
+        }
         if (['done','error','waiting_user','cancelled'].includes(data.type)) { source.close(); refresh(); }
       } catch { /* The next persisted snapshot restores any missing event. */ }
     };
-    source.onerror = () => { refresh(); };
-    return () => source.close();
+    source.onerror = () => { fallback??=setTimeout(()=>{fallback=undefined;void refresh();},5000); };
+    return () => {source.close();clearTimeout(fallback);};
   }, [state?.run?.id, state?.run?.status, refresh]);
   const activeEvents = events.filter(e => e.runId === state?.run?.id);
   const judgments = state?.result?.judgments ?? [];
@@ -135,21 +154,21 @@ export function Workspace({ tripId }: { tripId: string }) {
             <DayHead day={v.day} date={v.date} weather={v.weather} result={result} stops={stops.length}/>
             <DayAlert weather={v.weather}/>
             <ol className="timeline">{stops.map((item, index) => {
-              const js = currentJudgments.filter(j => j.itemId === item.id), insight = itemInsight(item, js, result?.dossiers ?? [], v.date), ripples = result?.ripples.filter(r => r.itemId === item.id) ?? [];
+              const js = currentJudgments.filter(j => j.itemId === item.id), insight = itemInsight(item, js, result?.dossiers ?? [], v.date,trip.items), ripples = result?.ripples.filter(r => r.itemId === item.id) ?? [];
               const stillChecking=(busy||incomplete)&&insight.state==='fits';
               return <li className={`stop is-${insight.state} ${item.kind === 'transport' ? 'is-leg' : ''} ${selected === item.id ? 'selected' : ''}`} id={`stop-${item.id}`} key={item.id}>
                 <span className="stop-node" aria-hidden>{item.kind === 'transport' ? <Bus size={12}/> : index + 1}</span>
                 <button className="stop-card stop-select" onClick={() => { setSelected(item.id); if (window.innerWidth < 900) setTab('evidence'); }} aria-pressed={selected === item.id}>
-                  <span className="stop-row"><span className="stop-text"><span className="stop-title"><span className="stop-name">{item.placeName}</span><span className="stop-kind">{kindLabels[item.kind]}{item.proposedBy==='agent'?' · Agent 建议':''}{item.start ? ` · ${item.start}${item.end ? `—${item.end}` : ''}` : ''}</span></span><span className={`stop-msg tone-${stillChecking?'verify':insight.state}`}>{stillChecking?'已有部分规则依据，最终核验尚未结束':insight.message}</span></span><PlanStatus state={insight.state} busy={stillChecking||busy && !js.length}/></span>
+                  <span className="stop-row"><span className="stop-text"><span className="stop-title"><span className="stop-name">{item.placeName}</span><span className="stop-kind">{kindLabels[item.kind]}{item.proposedBy==='agent'?' · Agent 建议':''}{` · ${insight.plannedTime}`}</span></span><span className={`stop-msg tone-${stillChecking?'verify':insight.state}`}>{stillChecking?'已有部分规则依据，最终核验尚未结束':insight.message}</span></span><PlanStatus state={insight.state} busy={stillChecking||busy && !js.length}/></span>
                 </button>
                 {ripples.map((r, n) => <p className="ripple-note" key={n}>需重新确认：{r.reason}</p>)}
               </li>;
             })}</ol>
           </section>; })}
-          {!busy && !incomplete && !!result && usefulSuggestions(result.suggestions, currentInsights).length > 0 && <section className="section"><div className="section-head"><h2><WandSparkles size={17}/>少改一点，重新走通</h2><span>用已存事实复核，应用前先看变化</span></div>{usefulSuggestions(result.suggestions, currentInsights).map((s, n) => { const after = itineraryInsights({ ...trip, items: s.itemsAfter }, s.judgments, result.dossiers).counts; return <button key={s.id} className="card suggestion-card" onClick={() => getPreview(s.ops, s.title)} disabled={actionBusy}><span className="suggestion-number">{n + 1}</span><span><strong>{s.title}</strong><small>需调整 {currentInsights.counts.adjust} → {after.adjust} · 可前往 {after.fits} · 待核实 {after.verify}</small></span><ArrowUpRight size={17}/></button>; })}</section>}
+          {!busy && !incomplete && !!result && usefulSuggestions(result.suggestions, currentInsights).length > 0 && <section className="section"><div className="section-head"><h2><WandSparkles size={17}/>少改一点，重新走通</h2><span>用已存事实复核，应用前先看变化</span></div>{usefulSuggestions(result.suggestions, currentInsights).map((s, n) => { const after = itineraryInsights({ ...trip, items: s.itemsAfter }, s.judgments, result.dossiers).counts; return <button key={s.id} className="card suggestion-card" onClick={() => getPreview(s.ops, s.title)} disabled={actionBusy}><span className="suggestion-number">{n + 1}</span><span><strong>{s.title}</strong><small>需调整 {currentInsights.counts.adjust} → {after.adjust} · 时段符合 {after.fits} · 待核实 {after.verify}</small></span><ArrowUpRight size={17}/></button>; })}</section>}
           {!!result?.alternatives.length && <section className="section"><div className="section-head"><h2>同城替代场馆</h2></div>{result.alternatives.map(a => <AlternativeCard key={a.name} alternative={a} trip={trip}/>)}</section>}
         </div>
-        <aside className="detail-panel">{selectedItem && <EvidencePanel key={selectedItem.id} item={selectedItem} judgments={selectedJudgments} dossiers={result?.dossiers ?? []} tripId={tripId} busy={busy || actionBusy} onAlternative={alternatives} onPlanTime={() => { setPlanStart(selectedItem.start || ''); setPlanEnd(selectedItem.end || ''); setTimeModal(true); }} images={guide?.images ?? []} onImage={setViewing}/>}</aside>
+        <aside className="detail-panel">{selectedItem && <EvidencePanel key={selectedItem.id} item={selectedItem} items={trip.items} judgments={selectedJudgments} dossiers={result?.dossiers ?? []} tripId={tripId} busy={busy || actionBusy} onAlternative={alternatives} onPlanTime={() => { setPlanStart(selectedItem.start || ''); setPlanEnd(selectedItem.end || ''); setTimeModal(true); }} images={guide?.images ?? []} onImage={setViewing}/>}</aside>
       </div>}
       {result?.announcement && <section className="card announcement-result"><div><FileSearch size={19}/><h2>{result.announcement.title}</h2><Status verdict={result.announcement.verdict}/></div><p>{result.announcement.explanation}</p><ul>{result.announcement.claims.map((c, i) => <li key={i}>{c}</li>)}</ul>{result.dossiers.flatMap(d => d.evidence).filter(e => result.announcement!.evidenceIds.includes(e.id)).slice(0, 5).map(e => <SourceCard key={e.id} evidence={e} quotes={result.dossiers.flatMap(d => d.facts).filter(f => f.evidenceId === e.id).map(f => f.quote).slice(0, 2)}/>)}</section>}
       <section className="fineprint"><h2>这份结果的边界</h2><p>临时关闭以官方公告为准，出发当天请再看一次。实时余票、预约库存、排队和实时路况需到官方或地图渠道确认；缺失的计划时段不会被自动补全。</p></section>
@@ -158,7 +177,7 @@ export function Workspace({ tripId }: { tripId: string }) {
     {viewing !== null && <GuideViewer shareId={trip.shareId} images={guide?.images ?? []} at={viewing} onChange={setViewing}/>}
     {timeModal && selectedItem && <Modal title={`补充「${selectedItem.placeName}」的计划时间`} close={() => setTimeModal(false)}><p className="modal-description">营业时间是景区的规则；这里填写你打算几点到达。预览只用已存事实重新核对，不会搜索，也不会自动应用。</p><label className="modal-field">计划到达<input type="time" value={planStart} onChange={e => setPlanStart(e.target.value)}/></label><label className="modal-field">计划离开（选填）<input type="time" value={planEnd} onChange={e => setPlanEnd(e.target.value)}/></label><div className="modal-actions"><Button disabled={!planStart || actionBusy} onClick={() => { setTimeModal(false); getPreview([{type:'shift',itemId:selectedItem.id,start:planStart,end:planEnd || null}],`核对「${selectedItem.placeName}」的计划时段`); }}>预览时段是否合适</Button></div></Modal>}
     {dateModal && <Modal title="换个日期试试" close={() => setDateModal(false)}><p className="modal-description">只使用已存事实重新计算，不会新增搜索。新日期没有适用证据的检查将保持待确认。</p><label className="modal-field">新的第1天日期<input type="date" value={newDate} onChange={e => setNewDate(e.target.value)}/></label><Button disabled={actionBusy || !newDate} onClick={() => getPreview([], '调整整趟行程的出发日期', newDate)}>{actionBusy ? <LoaderCircle size={16} className="spin"/> : <Search size={16}/>}预览重新判定结果</Button></Modal>}
-    {preview && previewInsights && <Modal title="先看变化，再应用" close={() => setPreview(null)}>{error && <div className="banner banner-error" role="alert"><AlertCircle size={16}/>{error}</div>}<p className="modal-description">{preview.title}。此预览没有新增搜索，以下按地点统计。</p><div className="preview-stats"><span>需调整 <b>{previewInsights.counts.adjust}</b></span><span>可前往 <b>{previewInsights.counts.fits}</b></span><span>待补时间 <b>{previewInsights.counts.needs_time}</b></span><span>待核实 <b>{previewInsights.counts.verify}</b></span></div><div className="preview-list">{previewInsights.items.map(({item, insight}) => { const before = trip.items.find(i => i.id === item.id); const changed = before?.placeName !== item.placeName || before?.day !== item.day || before?.start !== item.start || before?.end !== item.end || trip.startDate !== preview.trip.startDate; return <div className={changed ? 'changed' : ''} key={item.id}><strong>{item.placeName}{item.proposedBy === 'agent' && <small className="muted"> · Agent 建议</small>}</strong>{changed && <del>{before?.placeName} · Day {before?.day} {before?.start || '未定'}{before?.end ? `—${before.end}` : ''}</del>}<span>{dateForDay(preview.trip.startDate, item.day)} · {item.start || '时间未定'}{item.end ? `—${item.end}` : ''}</span><PlanStatus state={insight.state}/></div>; })}{trip.items.filter(i => !preview.trip.items.some(j => i.id === j.id)).map(i => <div className="removed" key={i.id}><del>{i.placeName}</del><span>将移除</span></div>)}</div><p className="modal-description">仍需确认的名额、交通及缺失时段不会因调整而变成已确认。</p><div className="modal-actions"><Button variant="outline" onClick={() => setPreview(null)}>保留原行程</Button><Button disabled={actionBusy} onClick={applyPreview}>{actionBusy ? <LoaderCircle size={16} className="spin"/> : <Check size={16}/>}应用修改</Button></div></Modal>}
+    {preview && previewInsights && <Modal title="先看变化，再应用" close={() => setPreview(null)}>{error && <div className="banner banner-error" role="alert"><AlertCircle size={16}/>{error}</div>}<p className="modal-description">{preview.title}。此预览没有新增搜索，以下按地点统计。</p><div className="preview-stats"><span>需调整 <b>{previewInsights.counts.adjust}</b></span><span>时段符合 <b>{previewInsights.counts.fits}</b></span><span>部分已核实 <b>{previewInsights.counts.partial}</b></span><span>出行参考 <b>{previewInsights.counts.reference}</b></span><span>待补时间 <b>{previewInsights.counts.needs_time}</b></span><span>待核实 <b>{previewInsights.counts.verify}</b></span></div><div className="preview-list">{previewInsights.items.map(({item, insight}) => { const before = trip.items.find(i => i.id === item.id); const changed = before?.placeName !== item.placeName || before?.day !== item.day || before?.start !== item.start || before?.end !== item.end || trip.startDate !== preview.trip.startDate; return <div className={changed ? 'changed' : ''} key={item.id}><strong>{item.placeName}{item.proposedBy === 'agent' && <small className="muted"> · Agent 建议</small>}</strong>{changed && <del>{before?.placeName} · Day {before?.day} {before?.start || '未定'}{before?.end ? `—${before.end}` : ''}</del>}<span>{dateForDay(preview.trip.startDate, item.day)} · {item.start || '时间未定'}{item.end ? `—${item.end}` : ''}</span><PlanStatus state={insight.state}/></div>; })}{trip.items.filter(i => !preview.trip.items.some(j => i.id === j.id)).map(i => <div className="removed" key={i.id}><del>{i.placeName}</del><span>将移除</span></div>)}</div><p className="modal-description">仍需确认的名额、交通及缺失时段不会因调整而变成已确认。</p><div className="modal-actions"><Button variant="outline" onClick={() => setPreview(null)}>保留原行程</Button><Button disabled={actionBusy} onClick={applyPreview}>{actionBusy ? <LoaderCircle size={16} className="spin"/> : <Check size={16}/>}应用修改</Button></div></Modal>}
     {noticeModal && <Modal title="核验一份公告" close={() => setNoticeModal(false)}><p className="modal-description">上传微信或场馆公告截图，或粘贴公告文字。系统会另行搜索佐证；截图本身不作为官方身份证明。</p><textarea className="notice-text" value={noticeText} onChange={e => setNoticeText(e.target.value)} placeholder="粘贴公告文字，尽量包含场馆名称、城市和日期…" maxLength={40000}/><input ref={noticeUpload} type="file" hidden multiple accept="image/jpeg,image/png,image/webp" onChange={e => setNoticeFiles(Array.from(e.target.files ?? []).slice(0, 6))}/><Button variant="outline" onClick={() => noticeUpload.current?.click()}><Upload size={15}/>{noticeFiles.length ? `已选择${noticeFiles.length}张截图` : '选择公告截图'}</Button><div className="modal-actions"><Button disabled={actionBusy || (!noticeText.trim() && !noticeFiles.length)} onClick={announcement}>{actionBusy ? <LoaderCircle size={16} className="spin"/> : <FileSearch size={16}/>}开始寻找佐证</Button></div></Modal>}
     {alternativeModal && <Modal title="寻找同城替代场馆" close={() => setAlternativeModal(false)}><p className="modal-description">候选场馆会逐一核查开放、时段与预约规则，搜索结果不足时保持待确认。</p>{busy ? <div className="alternative-loading"><LoaderCircle className="spin" size={24}/><p>正在独立核实候选场馆…</p></div> : result?.alternatives.length ? result.alternatives.map(a => <AlternativeCard key={a.name} alternative={a} trip={trip}/>) : <p>未检索到足够证据支持的候选场馆。</p>}<Button variant="outline" onClick={() => setAlternativeModal(false)}>返回调查</Button></Modal>}
   </>;

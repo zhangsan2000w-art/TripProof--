@@ -1,11 +1,12 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { resolve } from 'node:path';
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { database } from '@/db';
 import * as tables from '@/db/schema';
 import { guideSchema, tripInputSchema, type RunResult } from './domain';
-import { exportGuide, getSharedTrip, guideSummary, saveGuide, tripState } from './store';
+import { cacheGet, cacheSet, exportGuide, getSharedTrip, guideSummary, saveGuide, tripState } from './store';
 import { sampleManifestPath } from './sample-manifest';
 export { sampleManifestPath } from './sample-manifest';
 
@@ -60,8 +61,19 @@ export function exportFeaturedSamples(): SampleBundle {
 /** Run once before web/worker startup; retries restore missing data without replacing existing trips. */
 export function initializeSampleReports(path = 'data/sample-reports.json') {
   if (!existsSync(path)) return { imported: 0, featured: 0 };
-  const bundle = parseSampleBundle(JSON.parse(readFileSync(path, 'utf8')));
   const { db, sqlite } = database();
+  const stat=statSync(path),signature=JSON.stringify([stat.size,stat.mtimeMs,stat.ctimeMs]);
+  const manifestPath = sampleManifestPath(),markerKey=`samples:init:v1:${resolve(path)}`;
+  const manifestHash=()=>existsSync(manifestPath)?createHash('sha256').update(readFileSync(manifestPath)).digest('hex'):null;
+  type Marker={signature:string;manifestHash:string|null;featured:number;reports:{tripId:string;shareId:string;runId:string;revision:number;guide:boolean}[]};
+  const marker=cacheGet<Marker>(markerKey);
+  if(marker?.signature===signature&&marker.manifestHash===manifestHash()&&marker.manifestHash){
+    const exists=sqlite.prepare(`SELECT 1 FROM trips t JOIN runs r ON r.trip_id=t.id
+      WHERE t.id=? AND t.share_id=? AND r.id=? AND r.kind='investigation' AND r.status='completed' AND r.trip_revision=? AND r.result IS NOT NULL
+      AND (?=0 OR EXISTS (SELECT 1 FROM guides WHERE trip_id=t.id))`);
+    if(marker.reports.every(r=>exists.get(r.tripId,r.shareId,r.runId,r.revision,Number(r.guide))))return {imported:0,featured:marker.featured};
+  }
+  const bundle = parseSampleBundle(JSON.parse(readFileSync(path, 'utf8')));
   const imported = sqlite.transaction(() => {
     let count = 0;
     for (const { trip, run, guide } of bundle.reports) {
@@ -91,7 +103,6 @@ export function initializeSampleReports(path = 'data/sample-reports.json') {
     }
     return count;
   }).immediate();
-  const manifestPath = sampleManifestPath();
   let selected: z.infer<typeof reference>[] = [], appliedAt: string | null = null;
   if (existsSync(manifestPath)) {
     const manifest = manifestSchema.parse(JSON.parse(readFileSync(manifestPath, 'utf8')));
@@ -112,5 +123,6 @@ export function initializeSampleReports(path = 'data/sample-reports.json') {
     const temporary = `${manifestPath}.${process.pid}.tmp`;
     writeFileSync(temporary, content); renameSync(temporary, manifestPath);
   }
+  cacheSet(markerKey,{signature,manifestHash:manifestHash(),featured:selected.length,reports:bundle.reports.map(({trip,run,guide})=>({tripId:trip.id,shareId:trip.shareId,runId:run.id,revision:trip.revision,guide:!!guide}))} satisfies Marker,10*365*24*3600_000);
   return { imported, featured: selected.length };
 }

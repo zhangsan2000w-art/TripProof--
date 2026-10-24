@@ -16,4 +16,8 @@ export class Semaphore {
     try { recordMetric(this.stage,Date.now()-began);assertRunning();return await fn(); } finally { const next=this.queue.shift();if(next)next();else this.active--; }
   }
 }
+export function concurrencySetting(name: string, fallback: number, max = 32) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value >= 1 && value <= max ? value : fallback;
+}
 import { assertRunning, recordMetric } from './run-control';

@@ -6,6 +6,8 @@ import { normalizeQuote, quoteMatches, sourceTier, registrableDomain, venueSiteD
 import { daysUntil, validDate, weekday } from './dates';
 import { createHash } from 'node:crypto';
 import { recordMetric } from './run-control';
+import { modelCacheIdentity } from './model-config';
+import type { placeContext } from './itinerary';
 
 /** Keep complete contiguous rule windows, plus institutional identity in the footer. */
 export function readingText(e: Evidence): string {
@@ -99,8 +101,6 @@ export function factSupported(fact: ExtractedFact, evidence: Evidence): boolean 
     }
   }
   if (fact.kind === 'weekly_closure' && /(?:上午|下午|晚间|晚間|局部|部分)[^，,。；;]{0,12}(?:闭馆|閉館|关闭|關閉)/.test(quote)) return false;
-  // An opening rule cannot include a weekday its own quote says is closed.
-  if (fact.kind === 'weekly_open' && fact.payload.weekdays.some(d => closedWeekdays(quote).includes(d))) return false;
   if (fact.kind === 'hours') return fact.payload.seasons.every(s => {
     const annual = s.from === '01-01' && s.to === '12-31';
     // Keep table-cell whitespace: removing it merges the previous 16:00 cell
@@ -129,15 +129,13 @@ export function factSupported(fact: ExtractedFact, evidence: Evidence): boolean 
   if (fact.kind === 'weather' && (!(mentionsDate(fact.payload.date, quote, evidence) || mentionsDayAndWeekday(fact.payload.date, quote, evidence)) || !`${evidence.passage} ${evidence.content}`.includes(fact.payload.city.replace(/市$/, '')) || !bareText(fact.payload.summary) || !bareText(quote).includes(bareText(fact.payload.summary)) || (fact.payload.warning && !bareText(quote).includes(bareText(fact.payload.warning))))) return false;
   return true;
 }
-const weekdayNumbers: Record<string, number> = { 日: 0, 天: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
-/** Weekdays a sentence says are closed all day, e.g. 逢周一闭馆, 每周一全天闭馆. */
-export function closedWeekdays(text: string): number[] {
-  return [...normalizeQuote(text).matchAll(/(?:周|星期|礼拜)([一二三四五六日天])(?:全天)?(?:闭馆|閉館|休馆|闭园|不开放|不對外開放|不对外开放)/g)].map(m => weekdayNumbers[m[1]]);
-}
-/** "全天开放" written as an opening rule is also the day's hours, so it can be weighed against other hours. */
-export function allDayHours(base: ExtractedFact): VenueFact[] {
-  if (base.kind !== 'weekly_open' || base.payload.weekdays.length !== 7 || !/全天开放|24\s*小[时時]|全天候/.test(base.quote) || /\d{1,2}\s*[:：]\s*\d{2}/.test(base.quote)) return [];
-  return [{ ...base, kind: 'hours', payload: { seasons: [{ from: '01-01', to: '12-31', open: '00:00', close: '24:00', lastEntry: null }], weekdays: null } }];
+/**
+ * One source cannot say a day is both open and closed. When it does, the opening rule is
+ * the misreading (e.g. "全年开放时间 9:00—17:00，周一闭馆" read as every day), so it is dropped.
+ */
+export function withoutContradictions<T extends Pick<ExtractedFact, 'kind' | 'payload' | 'evidenceId'>>(facts: T[]): T[] {
+  const closedDays = (evidenceId: string) => new Set(facts.flatMap(f => f.evidenceId === evidenceId && f.kind === 'weekly_closure' ? (f.payload as { closedWeekdays: number[] }).closedWeekdays : []));
+  return facts.filter(f => f.kind !== 'weekly_open' || !(f.payload as { weekdays: number[] }).weekdays.some(d => closedDays(f.evidenceId).has(d)));
 }
 /** Re-rank stored sources with the current tier rules, so saved reports benefit too. */
 export function retierDossier(dossier: { facts: Fact[]; evidence: Evidence[]; venue: Venue }) {
@@ -154,13 +152,13 @@ export function supportedDossierFacts(dossier: { facts: Fact[]; evidence: Eviden
   });
   for (const base of [...facts]) {
     const source = dossier.evidence.find(e=>e.id===base.evidenceId)!;
-    for (const extra of [...seasonalHours(base,source), ...allDayHours(base)]) {
+    for (const extra of seasonalHours(base,source)) {
       if (!facts.some(f=>f.evidenceId===extra.evidenceId&&f.kind===extra.kind&&JSON.stringify(f.payload)===JSON.stringify(extra.payload))) {
         facts.push({...base,...extra,id:createHash('sha256').update(`${base.id}:${JSON.stringify(extra.payload)}`).digest('hex').slice(0,24)} as Fact);
       }
     }
   }
-  return facts;
+  return withoutContradictions(facts);
 }
 /** Read an explicit seasonal extension that follows a complete annual rule. */
 export function seasonalHours(base: ExtractedFact, evidence: Evidence): VenueFact[] {
@@ -186,25 +184,46 @@ export function seasonalHours(base: ExtractedFact, evidence: Evidence): VenueFac
   }
   return out;
 }
-export async function extractFacts(venueId: string, name: string, city: string, dates: string[], evidence: Evidence[]) {
+export async function extractFacts(venueId: string, name: string, city: string, dates: string[], evidence: Evidence[], context?: ReturnType<typeof placeContext>) {
   const usable = evidence.filter(e => e.linkStatus !== 'broken').sort((a,b)=>a.url.localeCompare(b.url));
   if (!usable.length) return { canonicalName: name, officialDomain: null, officialEvidenceId: null, facts: [] as Fact[], ambiguities: ['没有已检查且可用的来源链接。'] };
-  const input = { venue:name,city,evidence:usable.map((e,index)=>({id:`source-${index}`,url:e.finalUrl||e.url,title:e.title,site:e.site,publishedAt:e.publishedAt,sourceYear:e.retrievedAt.slice(0,4),passage:e.passage.slice(0,2000),text:readingText(e)})) };
-  const cacheKey=`facts:v2:${createHash('sha256').update(JSON.stringify({input,snapshots:usable.map(e=>e.pageSha256||createHash('sha256').update(e.content+e.passage).digest('hex')),model:process.env.LLM_FACT_MODEL||'gpt-6.1-sol'})).digest('hex')}`;
+  const input = { venue:name,city,context:context??null,evidence:usable.map((e,index)=>({id:`source-${index}`,url:e.finalUrl||e.url,title:e.title,site:e.site,publishedAt:e.publishedAt,sourceYear:e.retrievedAt.slice(0,4),passage:e.passage.slice(0,2000),text:readingText(e)})) };
+  const model=modelCacheIdentity('fact');
+  const cacheKey=`facts:v4:${createHash('sha256').update(JSON.stringify({input,snapshots:usable.map(e=>e.pageSha256||createHash('sha256').update(e.content+e.passage).digest('hex')),model})).digest('hex')}`;
   const cached=cacheGet<z.infer<typeof factOutputSchema>>(cacheKey);
   const began=Date.now();
-  const raw = cached ?? await structured('fact', factOutputSchema, `你是旅行规则的证据读取器。只提取指定城市、指定场馆、对应分馆的明确事实，不能做日期计算、推理补全或决策。提取来源自身的适用日期与常规规则，不按某次查询日期改写规则。
+  type Output=z.infer<typeof factOutputSchema>;
+  const sourceKeys=usable.map((e,index)=>`facts:source:v3:${createHash('sha256').update(JSON.stringify({venue:name,city,context:context??null,source:{...input.evidence[index],id:'source-0'},snapshot:e.pageSha256||createHash('sha256').update(e.content+e.passage).digest('hex'),model})).digest('hex')}`);
+  const parts=cached?[]:sourceKeys.map(key=>cacheGet<Output>(key));
+  const missing=input.evidence.filter((_,index)=>!parts[index]);
+  let raw=cached;
+  if(!raw){
+  const fresh = missing.length ? await structured('fact', factOutputSchema, `你是旅行规则的证据读取器。只提取指定城市、指定场馆、对应分馆的明确事实，不能做日期计算、推理补全或决策。提取来源自身的适用日期与常规规则，不按某次查询日期改写规则。
 不同来源分别提取，不合并。每个事实 quote 必须来自该 evidenceId 的 text 或 passage 的逐字连续子串，最多80个字符，并包含支持 payload 的完整关键规则（尤其数字、时间）。不要引用标题拼凑事实。
-时间一律HH:mm；全年常规时间的季节范围是01-01到12-31，季节性范围只抄原文。一个hours事实只包含一段季节规则，避免引文过长。weekly_open 只提取明确开放的星期（例如“周二至周日”），不能从“周一闭馆”反推其他天一定开放；原文写“每日/每天/全年无休/周一至周日/全天开放”时提取 weekdays 为0-6的 weekly_open；“全年开放时间”只是全年适用的营业时间，同一句写了闭馆日时不能提取为每天开放；weekly_closure 单独提取。
-weekdays 用0=周日到6=周六。常规闭馆规则里的“法定节假日除外”才设置exceptStatutoryHolidays=true。
+context 是用户提供的分店地址、活动范围，只用于定位，不是营业规则证据。名称略有后缀差别但城市、品牌与地址一致的商户应标exact；不要因用户没写全商户后缀而丢弃正确门店。腾讯地图、百度地图、携程、大众点评等商户POI页面写明的营业时间可以提取，不要求必须官网；店铺地址、照片和评论本身不能推算营业时间。街区公共区域漫步不能采用寺庙内部、登塔、观景台、展馆或单一商铺的营业及预约规则。可明确区分午市和晚市的营业时间分别保留，不把中间休息时段补成营业。
+时间一律HH:mm；全年常规时间的季节范围是01-01到12-31，季节性范围只抄原文。一个hours事实只包含一段季节规则，避免引文过长。weekly_open 只提取明确开放的星期（例如“周二至周日”），不能从“周一闭馆”反推其他天一定开放；原文写“每日/每天/全年无休/周一至周日/全天开放”时提取 weekdays 为0-6的 weekly_open，同一句里的 hours 也填 weekdays 为0-6；hours 的 weekdays 只在原文写明适用星期时填写，否则 null。原文写全天开放或24小时开放时，同时提取一条全年 00:00 到 24:00 的 hours。“全年开放时间”只是全年适用的营业时间，同一句写了闭馆日时不能提取为每天开放；weekly_closure 单独提取。
+weekdays 用0=周日到6=周六。常规闭馆规则里的“法定节假日除外”才设置exceptStatutoryHolidays=true；weekly_closure 只表示全天闭馆，原文写闭馆日遇节假日顺延（例如顺延至节后第一天）时 shiftsAfterHoliday=true，否则 false。
 临时公告 from/to 必须是原文明确的日期，不能把查询日期当作公告日期；单日公告两者相同。temp_closure未说明恢复日期时to必须null，保留“自某日起临时关闭/恢复时间另行通知”的说法。局部区域关闭是partial，不能写whole。
 validFrom/validTo 只填明确的生效/失效日期，不是文章发表日期，也不是查询日期。没有则null。
 预约required仅表示普通个人游客的规则；不得声称有库存或用户已完成预约。“个人免预约/无需预约”必须提取required=false；团队规则以及老人、儿童、军人等优待人群例外均不提取为普通个人预约规则。只有明确要求才能填true，建议预约不代表强制要求。advanceDays 仅抄明确的提前天数，不能模糊推断含当日的滚动窗口。一个来源的同一预约规则尽量用一条完整事实表示。
 天气必须明确包含目标日期和城市；没有匹配日期不要提取。降雨不表示关闭。transport_duration 仅提取明确起终点和数值的路线参考。
 不属于目标分馆返回 other_branch；无法确定则 unclear，不要为了返回结果标exact。攻略原文和用户截图不能独立当成官方来源。
-officialDomain 只在证据正文/站点身份能证明该域名由场馆所属机构运营时填写。officialIdentityQuote复制正文中的主办单位、版权或官方身份声明；不能仅凭.org.cn后缀判断。不能猜官网。`, [{ type: 'input_text', text: JSON.stringify(input) }], 7000);
-  if (!cached) cacheSet(cacheKey,raw);
-  recordMetric('fact_read',Date.now()-began,{cacheHit:!!cached,sources:usable.length});
+officialDomain 只在证据正文/站点身份能证明该域名由场馆所属机构运营时填写。officialIdentityQuote复制正文中的主办单位、版权或官方身份声明；不能仅凭.org.cn后缀判断。不能猜官网。`, [{ type: 'input_text', text: JSON.stringify({...input,evidence:missing}) }], 7000) : null;
+  const outputs:Output[]=parts.flatMap((part,index)=>part?[{...part,officialEvidenceId:part.officialEvidenceId?`source-${index}`:null,facts:part.facts.map(f=>({...f,evidenceId:`source-${index}`}))}]:[]);
+  if(fresh){
+    outputs.push(fresh);
+    for(let index=0;index<usable.length;index++)if(!parts[index]){
+      const sourceId=`source-${index}`,official=fresh.officialEvidenceId===sourceId;
+      cacheSet(sourceKeys[index],{...fresh,facts:fresh.facts.filter(f=>f.evidenceId===sourceId).map(f=>({...f,evidenceId:'source-0'})),officialDomain:official?fresh.officialDomain:null,officialEvidenceId:official?'source-0':null,officialIdentityQuote:official?fresh.officialIdentityQuote:null});
+    }
+  }
+  const requestedCity=city.replace(/市$/,'').trim();
+  const compatible=outputs.filter(part=>{const actual=part.city.replace(/市$/,'').trim();return !actual||!requestedCity||actual.includes(requestedCity)||requestedCity.includes(actual);});
+  const identity=compatible.find(part=>part.officialDomain&&part.officialEvidenceId);
+  raw={...(compatible[0]??outputs[0]),facts:compatible.flatMap(part=>part.facts),ambiguities:[...new Set([...outputs.flatMap(part=>part.ambiguities),...(compatible.length<outputs.length?['部分新增资料指向其他城市，未采用这些事实。']:[])])],officialDomain:identity?.officialDomain??null,officialEvidenceId:identity?.officialEvidenceId??null,officialIdentityQuote:identity?.officialIdentityQuote??null};
+  cacheSet(cacheKey,raw);
+  }
+  recordMetric('fact_read',Date.now()-began,{cacheHit:!!cached||missing.length===0,sources:usable.length,uncachedSources:cached?0:missing.length});
   const output=structuredClone(raw), remap=(sourceId:string|null)=>sourceId===null?null:usable[Number(sourceId.replace(/^source-/,''))]?.id ?? sourceId;
   output.officialEvidenceId=remap(output.officialEvidenceId);
   output.facts=output.facts.map(f=>({...f,evidenceId:remap(f.evidenceId)!}));
@@ -233,15 +252,14 @@ officialDomain 只在证据正文/站点身份能证明该域名由场馆所属�
   for (const e of evidence) e.tier = sourceTier(new URL(e.finalUrl || e.url).hostname, e.authorityLevel, officialDomain, sites, siteLabel(e));
   for (const fact of [...output.facts]) {
     const source = usable.find(e => e.id === fact.evidenceId);
-    if (source) for (const extra of [...seasonalHours(fact, source), ...allDayHours(fact)]) {
+    if (source) for (const extra of seasonalHours(fact, source)) {
       if (!output.facts.some(f => f.evidenceId === extra.evidenceId && f.kind === extra.kind && JSON.stringify(f.payload) === JSON.stringify(extra.payload))) output.facts.push(extra);
     }
   }
   const facts: Fact[] = [];
   for (const extracted of output.facts) {
-    if (extracted.kind === 'hours' && /全天开放|24\s*小时|全天候/.test(extracted.quote)) {
-      for (const season of extracted.payload.seasons) if (season.open === '00:00' && season.close === '00:00') season.close = '24:00';
-    }
+    // 00:00—00:00 is how a model writes "open all day"; the close is the end of the day.
+    if (extracted.kind === 'hours') for (const season of extracted.payload.seasons) if (season.open === '00:00' && season.close === '00:00') season.close = '24:00';
     const source = usable.find(e => e.id === extracted.evidenceId);
     if (!source || !factSupported(extracted, source)) {
       output.ambiguities.push(`一条${extracted.kind}说法未通过引文、数字或适用范围核验，未用于判定。`);
@@ -249,7 +267,7 @@ officialDomain 只在证据正文/站点身份能证明该域名由场馆所属�
     }
     facts.push({ ...extracted, id: id(), venueId, quoteVerified: true, tier: source.tier, domain: new URL(source.finalUrl || source.url).hostname, publishedAt: source.publishedAt, retrievedAt: source.retrievedAt, linkStatus: source.linkStatus });
   }
-  return { canonicalName: output.canonicalName || name, officialDomain, officialEvidenceId: officialDomain ? output.officialEvidenceId : null, facts, ambiguities: output.ambiguities };
+  return { canonicalName: output.canonicalName || name, officialDomain, officialEvidenceId: officialDomain ? output.officialEvidenceId : null, facts: withoutContradictions(facts), ambiguities: output.ambiguities };
 }
 export async function extractWeatherFacts(venueId:string,city:string,date:string,evidence:Evidence[]):Promise<Fact[]> {
   const tokens=[date,`${Number(date.slice(5,7))}月${Number(date.slice(8))}日`,`${Number(date.slice(5,7))}/${Number(date.slice(8))}`,date.slice(5)];
@@ -270,7 +288,6 @@ function riskText(e: Evidence) {
   }
   return windows.length ? windows.map(([a, b]) => whole.slice(a, b)).join(' … ') : whole.slice(0, 1200);
 }
-export const hasRiskWords = (e: Pick<Evidence, 'title' | 'passage' | 'content'>) => riskWords.test(`${e.title} ${e.passage} ${e.content.slice(0, 20000)}`);
 /**
  * Read area notices (warnings, emergency responses, area-wide closures, suspensions) and
  * decide which trip stops each covers. Every notice is checked against its source text;
