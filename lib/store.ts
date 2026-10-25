@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
-import { and, desc, eq, gt, asc } from 'drizzle-orm';
+import { and, desc, eq, gt, asc, sql } from 'drizzle-orm';
 import { database } from '@/db';
 import * as s from '@/db/schema';
 import type { Trip, TripInput, Run, RunKind, RunResult, EventType, TripState, Guide, GuideSummary } from './domain';
@@ -157,7 +157,9 @@ export function recoverInterruptedRuns() {
   }
 }
 export function tripState(trip: Trip, options: { completedOnly?: boolean; afterEvent?: number } = {}): TripState {
-  const rows = database().db.select().from(s.runs).where(eq(s.runs.tripId, trip.id)).orderBy(desc(s.runs.createdAt)).all();
+  // Several runs can be created in the same millisecond. rowid breaks the tie
+  // by insertion order so polling always sees the newest run, not an older one.
+  const rows = database().db.select().from(s.runs).where(eq(s.runs.tripId, trip.id)).orderBy(desc(s.runs.createdAt), sql`rowid DESC`).all();
   const available = rows.filter(r => !options.completedOnly || r.status === 'completed');
   const run = available.find(r => r.tripRevision === trip.revision) ?? null;
   const base = available.find(r => r.tripRevision === trip.revision && r.kind === 'investigation' && r.result) ?? null;

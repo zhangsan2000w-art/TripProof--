@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "bin": { "tripproof": "./bin/tripproof.mjs" },
   "packageManager": "pnpm@12.14.0",
   "engines": { "node": ">=22.18.0" },
   "scripts": {
     "dev": "tsx scripts/dev.ts",
+    "cli": "node bin/tripproof.mjs",
     "dev:web": "next dev --hostname 127.0.0.1",
     "worker": "tsx --env-file=.env.local scripts/worker.ts",
     "build": "next build",
